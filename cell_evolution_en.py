@@ -4625,9 +4625,10 @@ class Renderer:
         gx = (self.screen_w - gw) // 2
         gy = self.screen_h - gh - 32
 
-        # Cache: only redraw on new data
-        if not hasattr(self, '_pop_graph_cache') or self._pop_graph_n != n:
-            self._pop_graph_n = n
+        # Cache: only redraw on new data (use tick to detect changes when history is capped)
+        current_tick = history[-1][0] if history else 0
+        if not hasattr(self, '_pop_graph_cache') or self._pop_graph_tick != current_tick:
+            self._pop_graph_tick = current_tick
             self._pop_graph_surf = pygame.Surface((gw, gh), pygame.SRCALPHA)
             surf = self._pop_graph_surf
             surf.fill((0, 0, 0, 170))
