@@ -3096,6 +3096,13 @@ class Renderer:
         self.flash_message = ""     # Flash message at screen center
         self.flash_timer = 0        # How many frames it's visible
 
+        # --- Petri Dish ---
+        self.petri_dish = PetriDish(screen_w, screen_h)
+        self.dragging_cell = None   # Cell being dragged
+        self.drag_start = None      # Screen coords where drag started
+        self.drag_offset_x = 0      # Offset so cell doesn't jump to cursor
+        self.drag_offset_y = 0
+
         # --- Action Camera ---
         self.action_cam = False     # Action camera mode on/off
         self.action_target_x = 0.0  # Current focus point
@@ -3537,13 +3544,36 @@ class Renderer:
         # Top genomes panel (bottom right corner)
         self._draw_top_genomes(world)
 
-        # Minimap (bottom left, only in action cam mode)
-        if self.action_cam:
+        # Petri dish (bottom left)
+        self.petri_dish.draw(self.screen)
+
+        # Minimap (bottom left above petri dish, only in action cam mode)
+        if self.action_cam and not self.petri_dish.visible:
             self._draw_minimap(world)
 
         # Population graph (bottom center)
         if self.show_pop_graph and len(world.pop_history) > 2:
             self._draw_pop_graph(world)
+
+        # Dragging cell ghost
+        if self.dragging_cell and self.dragging_cell.alive:
+            mx, my = pygame.mouse.get_pos()
+            cr = max(4, int(self.dragging_cell.genome.size * 0.6 + 2))
+            diet = self.dragging_cell.genome.diet
+            if diet < 0.3:
+                gc = (80, 200, 80)
+            elif diet < 0.7:
+                gc = (180, 180, 60)
+            else:
+                gc = (200, 60, 60)
+            ghost_surf = pygame.Surface((cr * 4, cr * 4), pygame.SRCALPHA)
+            pygame.draw.circle(ghost_surf, (*gc, 150), (cr * 2, cr * 2), cr)
+            self.screen.blit(ghost_surf, (mx - cr * 2, my - cr * 2))
+            # Highlight drop zone
+            if self.petri_dish.is_in_drop_zone(mx, my):
+                pygame.draw.circle(self.screen, (100, 200, 255),
+                                 (self.petri_dish.drop_cx, self.petri_dish.drop_cy),
+                                 self.petri_dish.drop_r, 3)
 
         # Flash message (save/load feedback)
         if self.flash_timer > 0:
@@ -4103,6 +4133,280 @@ class Renderer:
         self.selected_cell = best
 
 
+# --- Petri Dish (Gene Editor) ---
+class PetriDish:
+    """Drag-and-drop gene editor. Drop a cell in the dish to manipulate its genes."""
+
+    GENE_DEFS = [
+        {"name": "Size",        "idx": 0,  "min": 3,    "max": 25,   "step": 0.5,  "fmt": "{:.1f}"},
+        {"name": "Sense",       "idx": 1,  "min": 15,   "max": 350,  "step": 5,    "fmt": "{:.0f}"},
+        {"name": "Attack",      "idx": 2,  "min": 0,    "max": 15,   "step": 0.5,  "fmt": "{:.1f}"},
+        {"name": "Defense",     "idx": 3,  "min": 0,    "max": 15,   "step": 0.5,  "fmt": "{:.1f}"},
+        {"name": "Metabolism",  "idx": 4,  "min": 0.2,  "max": 1.0,  "step": 0.05, "fmt": "{:.2f}"},
+        {"name": "Diet",        "idx": 5,  "min": 0,    "max": 1,    "step": 0.05, "fmt": "{:.2f}"},
+        {"name": "Repro thr.",  "idx": 6,  "min": 40,   "max": 300,  "step": 5,    "fmt": "{:.0f}"},
+        {"name": "Aggression",  "idx": 8,  "min": 0,    "max": 1,    "step": 0.05, "fmt": "{:.2f}"},
+        {"name": "Social",      "idx": 9,  "min": 0,    "max": 1,    "step": 0.05, "fmt": "{:.2f}"},
+        {"name": "Cilia #",     "idx": 10, "min": 1,    "max": 8,    "step": 1,    "fmt": "{:.0f}"},
+        {"name": "Cilia spr.",  "idx": 11, "min": 0,    "max": 1,    "step": 0.05, "fmt": "{:.2f}"},
+        {"name": "Cilia pwr.",  "idx": 12, "min": 0.2,  "max": 3.0,  "step": 0.1,  "fmt": "{:.1f}"},
+        {"name": "Turn rate",   "idx": 13, "min": 0.01, "max": 0.25, "step": 0.01, "fmt": "{:.2f}"},
+        {"name": "Litter",      "idx": 14, "min": 1,    "max": 4,    "step": 1,    "fmt": "{:.0f}"},
+        {"name": "Taunt pwr.",  "idx": 15, "min": 0.05, "max": 2.5,  "step": 0.1,  "fmt": "{:.1f}"},
+        {"name": "Stealth",     "idx": 16, "min": 0,    "max": 1,    "step": 0.05, "fmt": "{:.2f}"},
+    ]
+
+    def __init__(self, screen_w, screen_h):
+        self.screen_w = screen_w
+        self.screen_h = screen_h
+        self.cell = None           # The captured cell
+        self.original_genes = None # Backup for cancel
+        self.visible = False
+        self.anim_tick = 0
+        self.scroll_offset = 0     # For scrolling gene list
+
+        # Panel geometry
+        self.panel_w = 260
+        self.row_h = 22
+        self.dish_r = 50           # Dish circle radius
+        self.header_h = self.dish_r * 2 + 30
+        self.panel_h = self.header_h + len(self.GENE_DEFS) * self.row_h + 50
+        self.panel_x = 8
+        self.panel_y = screen_h - self.panel_h - 8
+
+        # Buttons
+        self.btn_release = pygame.Rect(self.panel_x + 10, self.panel_y + self.panel_h - 40,
+                                       110, 28)
+        self.btn_clone = pygame.Rect(self.panel_x + 140, self.panel_y + self.panel_h - 40,
+                                     110, 28)
+
+        self.font = pygame.font.SysFont("Arial", 12)
+        self.font_title = pygame.font.SysFont("Arial", 14, bold=True)
+        self.dragging_slider = -1  # Which gene slider is being dragged (-1 = none)
+
+        # Drop zone (the dish circle area for drag-and-drop detection)
+        self.drop_cx = self.panel_x + self.panel_w // 2
+        self.drop_cy = self.panel_y + 10 + self.dish_r
+        self.drop_r = self.dish_r + 20
+
+    def capture_cell(self, cell):
+        """Put a cell into the petri dish for gene editing."""
+        self.cell = cell
+        self.original_genes = cell.genome.genes.copy()
+        self.visible = True
+        self.anim_tick = 0
+        self.scroll_offset = 0
+        self.dragging_slider = -1
+
+    def release_cell(self):
+        """Release the cell back into the world with modified genes."""
+        if self.cell:
+            # Recalculate derived properties
+            self.cell.genome._update_cache()  if hasattr(self.cell.genome, '_update_cache') else None
+            size = self.cell.genome.size
+            self.cell.max_hp = size * 2.5 + self.cell.genome.defense * 1.5
+            self.cell.hp = min(self.cell.hp, self.cell.max_hp)
+            self.cell.radius = size * 0.6 + 2
+            self.cell.current_size = size
+        self.cell = None
+        self.visible = False
+
+    def cancel(self):
+        """Restore original genes and release."""
+        if self.cell and self.original_genes is not None:
+            self.cell.genome.genes = self.original_genes.copy()
+        self.release_cell()
+
+    def clone_cell(self, world):
+        """Clone the cell with current (modified) genes into the world."""
+        if not self.cell:
+            return
+        from copy import deepcopy
+        clone = Cell(self.cell.x + random.uniform(-30, 30),
+                     self.cell.y + random.uniform(-30, 30),
+                     Genome(self.cell.genome.genes.copy()),
+                     self.cell.energy * 0.5)
+        clone.generation = self.cell.generation
+        world.cells.append(clone)
+
+    def is_in_drop_zone(self, sx, sy):
+        """Check if screen coords are inside the dish drop zone."""
+        dx = sx - self.drop_cx
+        dy = sy - self.drop_cy
+        return dx * dx + dy * dy < self.drop_r * self.drop_r
+
+    def handle_click(self, pos):
+        """Handle mouse click on petri dish UI. Returns True if click was consumed."""
+        if not self.visible or not self.cell:
+            return False
+        mx, my = pos
+
+        # Release button
+        if self.btn_release.collidepoint(mx, my):
+            self.release_cell()
+            return True
+
+        # Clone button
+        if self.btn_clone.collidepoint(mx, my):
+            return True  # Clone handled by Game (needs world reference)
+
+        # Gene slider click
+        slider_start_y = self.panel_y + self.header_h
+        for i, gdef in enumerate(self.GENE_DEFS):
+            row_y = slider_start_y + i * self.row_h
+            slider_x = self.panel_x + 85
+            slider_w = self.panel_w - 130
+            if slider_x <= mx <= slider_x + slider_w and row_y <= my <= row_y + self.row_h:
+                self.dragging_slider = i
+                self._update_gene_from_mouse(mx)
+                return True
+
+        return self._is_inside(mx, my)
+
+    def handle_drag(self, pos):
+        """Handle mouse drag on gene sliders."""
+        if self.dragging_slider >= 0:
+            self._update_gene_from_mouse(pos[0])
+            return True
+        return False
+
+    def handle_release(self):
+        """Handle mouse button release."""
+        self.dragging_slider = -1
+
+    def _update_gene_from_mouse(self, mx):
+        """Update gene value based on mouse x position on slider."""
+        if self.dragging_slider < 0 or not self.cell:
+            return
+        gdef = self.GENE_DEFS[self.dragging_slider]
+        slider_x = self.panel_x + 85
+        slider_w = self.panel_w - 130
+        t = max(0, min(1, (mx - slider_x) / slider_w))
+        val = gdef['min'] + t * (gdef['max'] - gdef['min'])
+        # Snap to step
+        val = round(val / gdef['step']) * gdef['step']
+        val = max(gdef['min'], min(gdef['max'], val))
+        self.cell.genome.genes[gdef['idx']] = val
+
+    def _is_inside(self, mx, my):
+        """Check if point is inside the panel."""
+        return (self.panel_x <= mx <= self.panel_x + self.panel_w and
+                self.panel_y <= my <= self.panel_y + self.panel_h)
+
+    def draw(self, screen):
+        """Draw the petri dish and gene editor."""
+        if not self.visible:
+            # Draw empty dish drop zone hint
+            pygame.draw.circle(screen, (30, 40, 50), (self.drop_cx, self.drop_cy), self.dish_r, 2)
+            hint = self.font.render("Drag cell here", True, (60, 70, 80))
+            screen.blit(hint, (self.drop_cx - hint.get_width() // 2, self.drop_cy + self.dish_r + 4))
+            return
+
+        if not self.cell:
+            return
+
+        self.anim_tick += 1
+
+        # Panel background
+        panel_surf = pygame.Surface((self.panel_w, self.panel_h), pygame.SRCALPHA)
+        panel_surf.fill((15, 20, 30, 230))
+        screen.blit(panel_surf, (self.panel_x, self.panel_y))
+        pygame.draw.rect(screen, (60, 100, 160), (self.panel_x, self.panel_y,
+                         self.panel_w, self.panel_h), 2, border_radius=8)
+
+        # --- Dish circle with cell ---
+        dish_cx = self.panel_x + self.panel_w // 2
+        dish_cy = self.panel_y + 10 + self.dish_r
+
+        # Petri dish background (gradient-ish)
+        pygame.draw.circle(screen, (25, 35, 50), (dish_cx, dish_cy), self.dish_r)
+        pygame.draw.circle(screen, (50, 80, 120), (dish_cx, dish_cy), self.dish_r, 2)
+
+        # Draw the cell in the dish (simplified)
+        cell = self.cell
+        cr = max(4, int(cell.genome.size * 0.6 + 2))
+        # Pulsing animation
+        pulse = math.sin(self.anim_tick * 0.05) * 2
+        cr_anim = cr + int(pulse)
+
+        # Cell color based on diet
+        diet = cell.genome.diet
+        if diet < 0.3:
+            cell_color = (80, 200, 80)
+        elif diet < 0.7:
+            cell_color = (180, 180, 60)
+        else:
+            cell_color = (200, 60, 60)
+
+        pygame.draw.circle(screen, cell_color, (dish_cx, dish_cy), cr_anim)
+        pygame.draw.circle(screen, (255, 255, 255, 120), (dish_cx, dish_cy), cr_anim, 1)
+
+        # Draw cilia
+        n_cilia = cell.genome.num_cilia
+        for i in range(int(n_cilia)):
+            angle = self.anim_tick * 0.08 + i * 2 * math.pi / n_cilia
+            cx = dish_cx + int(math.cos(angle) * (cr_anim + 4))
+            cy = dish_cy + int(math.sin(angle) * (cr_anim + 4))
+            ex = dish_cx + int(math.cos(angle) * (cr_anim + 8 + cell.genome.cilia_power * 3))
+            ey = dish_cy + int(math.sin(angle) * (cr_anim + 8 + cell.genome.cilia_power * 3))
+            pygame.draw.line(screen, (150, 200, 255), (cx, cy), (ex, ey), 1)
+
+        # Title
+        diet_str = "Herb" if diet < 0.3 else ("Omni" if diet < 0.7 else "Pred")
+        title = self.font_title.render(f"Petri Dish  [{diet_str} Gen:{cell.generation}]", True, (100, 200, 255))
+        screen.blit(title, (self.panel_x + 8, self.panel_y + self.header_h - 20))
+
+        # --- Gene sliders ---
+        slider_start_y = self.panel_y + self.header_h
+        for i, gdef in enumerate(self.GENE_DEFS):
+            row_y = slider_start_y + i * self.row_h
+            val = cell.genome.genes[gdef['idx']]
+            val = max(gdef['min'], min(gdef['max'], val))
+
+            # Name
+            name_surf = self.font.render(gdef['name'], True, (160, 170, 190))
+            screen.blit(name_surf, (self.panel_x + 6, row_y + 3))
+
+            # Slider track
+            slider_x = self.panel_x + 85
+            slider_w = self.panel_w - 130
+            slider_y = row_y + self.row_h // 2
+
+            pygame.draw.line(screen, (40, 50, 65), (slider_x, slider_y),
+                           (slider_x + slider_w, slider_y), 3)
+
+            # Slider fill
+            t = (val - gdef['min']) / max(0.001, gdef['max'] - gdef['min'])
+            fill_w = int(t * slider_w)
+            bar_color = (60, 140, 200) if i != self.dragging_slider else (100, 200, 255)
+            pygame.draw.line(screen, bar_color, (slider_x, slider_y),
+                           (slider_x + fill_w, slider_y), 3)
+
+            # Slider knob
+            knob_x = slider_x + fill_w
+            pygame.draw.circle(screen, (200, 220, 255), (knob_x, slider_y), 5)
+
+            # Value text
+            val_str = gdef['fmt'].format(val)
+            val_surf = self.font.render(val_str, True, (180, 190, 210))
+            screen.blit(val_surf, (slider_x + slider_w + 4, row_y + 3))
+
+        # --- Buttons ---
+        # Release button
+        btn_color = (40, 120, 60) if self.btn_release.collidepoint(pygame.mouse.get_pos()) else (30, 80, 45)
+        pygame.draw.rect(screen, btn_color, self.btn_release, border_radius=4)
+        pygame.draw.rect(screen, (60, 160, 80), self.btn_release, 1, border_radius=4)
+        rel_txt = self.font_title.render("Release", True, (180, 255, 180))
+        screen.blit(rel_txt, (self.btn_release.x + 25, self.btn_release.y + 5))
+
+        # Clone button
+        btn_color2 = (40, 60, 120) if self.btn_clone.collidepoint(pygame.mouse.get_pos()) else (30, 45, 80)
+        pygame.draw.rect(screen, btn_color2, self.btn_clone, border_radius=4)
+        pygame.draw.rect(screen, (80, 100, 200), self.btn_clone, 1, border_radius=4)
+        cln_txt = self.font_title.render("Clone", True, (180, 200, 255))
+        screen.blit(cln_txt, (self.btn_clone.x + 30, self.btn_clone.y + 5))
+
+
 # --- Settings menu ---
 class SettingsMenu:
     """Live settings panel with sliders."""
@@ -4438,6 +4742,22 @@ class Game:
                         self.paused = True  # Pause when menu opens
             elif event.type == pygame.MOUSEMOTION:
                 self.settings_menu.handle_mouse_move(event.pos)
+                # Petri dish slider dragging
+                if self.renderer.petri_dish.handle_drag(event.pos):
+                    continue
+                # Cell dragging
+                if self.renderer.dragging_cell and pygame.mouse.get_pressed()[0]:
+                    continue  # Just dragging, visual handled in draw
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if event.button == 1:
+                    # Drop cell into petri dish?
+                    if self.renderer.dragging_cell:
+                        if self.renderer.petri_dish.is_in_drop_zone(*event.pos):
+                            self.renderer.petri_dish.capture_cell(self.renderer.dragging_cell)
+                            self.renderer.selected_cell = self.renderer.dragging_cell
+                            self.paused = True  # Pause while editing
+                        self.renderer.dragging_cell = None
+                    self.renderer.petri_dish.handle_release()
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     # If menu is open and clicked inside
@@ -4452,7 +4772,30 @@ class Game:
                         else:
                             self.settings_menu.visible = False  # Click outside: close
                             continue
-                    self.renderer.handle_click(event.pos, self.world)
+                    # Petri dish interactions (sliders, buttons)
+                    pd = self.renderer.petri_dish
+                    if pd.visible:
+                        if pd.btn_clone.collidepoint(event.pos):
+                            pd.clone_cell(self.world)
+                            self.renderer.flash_message = "Cell cloned!"
+                            self.renderer.flash_timer = 90
+                            continue
+                        if pd.handle_click(event.pos):
+                            continue
+                    # Start dragging a cell?
+                    wx, wy = self.renderer.screen_to_world(*event.pos)
+                    for cell in self.world.cells:
+                        if not cell.alive:
+                            continue
+                        dx = cell.x - wx
+                        dy = cell.y - wy
+                        if dx * dx + dy * dy < (cell.radius + 10) ** 2:
+                            self.renderer.dragging_cell = cell
+                            self.renderer.drag_start = event.pos
+                            break
+                    else:
+                        # No cell grabbed — normal click
+                        self.renderer.handle_click(event.pos, self.world)
                 elif event.button == 4:  # Scroll up - zoom in
                     self.renderer.zoom = min(3.0, self.renderer.zoom * 1.1)
                 elif event.button == 5:  # Scroll down - zoom out
