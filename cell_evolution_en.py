@@ -4167,26 +4167,24 @@ class PetriDish:
         # Panel geometry
         self.panel_w = 260
         self.row_h = 22
-        self.dish_r = 50           # Dish circle radius
+        self.dish_r = 35           # Dish circle radius (compact)
         self.header_h = self.dish_r * 2 + 30
         self.panel_h = self.header_h + len(self.GENE_DEFS) * self.row_h + 50
         self.panel_x = 8
         self.panel_y = screen_h - self.panel_h - 30
 
-        # Buttons
-        self.btn_release = pygame.Rect(self.panel_x + 10, self.panel_y + self.panel_h - 40,
-                                       110, 28)
-        self.btn_clone = pygame.Rect(self.panel_x + 140, self.panel_y + self.panel_h - 40,
-                                     110, 28)
-
         self.font = pygame.font.SysFont("Arial", 12)
         self.font_title = pygame.font.SysFont("Arial", 14, bold=True)
         self.dragging_slider = -1  # Which gene slider is being dragged (-1 = none)
 
-        # Drop zone (the dish circle area for drag-and-drop detection)
-        self.drop_cx = self.panel_x + self.panel_w // 2
-        self.drop_cy = self.panel_y + 10 + self.dish_r
-        self.drop_r = self.dish_r + 20
+        # Drop zone — fixed bottom-left corner, always visible
+        self.drop_cx = 55
+        self.drop_cy = screen_h - 55
+        self.drop_r = self.dish_r + 15
+
+        # Buttons are recalculated when panel opens
+        self.btn_release = pygame.Rect(0, 0, 0, 0)
+        self.btn_clone = pygame.Rect(0, 0, 0, 0)
 
     def capture_cell(self, cell):
         """Put a cell into the petri dish for gene editing."""
@@ -4196,6 +4194,12 @@ class PetriDish:
         self.anim_tick = 0
         self.scroll_offset = 0
         self.dragging_slider = -1
+        # Recalculate panel to grow upward from bottom-left
+        self.panel_y = self.screen_h - self.panel_h - 30
+        self.btn_release = pygame.Rect(self.panel_x + 10, self.panel_y + self.panel_h - 40,
+                                       110, 28)
+        self.btn_clone = pygame.Rect(self.panel_x + 140, self.panel_y + self.panel_h - 40,
+                                     110, 28)
 
     def release_cell(self):
         """Release the cell back into the world with modified genes."""
