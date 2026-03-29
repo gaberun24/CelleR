@@ -567,7 +567,7 @@ class Cell:
         # HP regeneration (only when not in combat and has energy)
         if not self.being_attacked_by and self.hp < self.max_hp and self.energy > 20:
             self.hp = min(self.max_hp, self.hp + self.hp_regen)
-        self.being_attacked_by = []  # Reset every tick
+        # being_attacked_by is reset at the start of World.update()
         if self.damaged_flash > 0:
             self.damaged_flash -= 1
 
@@ -847,7 +847,11 @@ class Cell:
         """Emit taunt — sonar ping, range and speed depend on taunt_power gene."""
         tp = self.genome.taunt_power
         self.taunt_type = taunt_type
-        self.taunt_timer = int(30 + tp * 15)  # Stronger gene = longer wave (30-67 ticks)
+        base_timer = int(30 + tp * 15)  # Stronger gene = longer wave (30-67 ticks)
+        # Predator mate calls travel 2x farther (sparse population, need wider reach)
+        if taunt_type == 'mate' and self.genome.is_predator():
+            base_timer *= 2
+        self.taunt_timer = base_timer
         self.taunt_radius = 0.0
         self.taunt_target_id = target_id
         # Stronger taunt = more expensive (trade-off: energy vs range)
@@ -1398,6 +1402,10 @@ class World:
     def update(self):
         self.tick += 1
 
+        # Reset attack memory before any AI runs (prevents execution order desync)
+        for cell in self.cells:
+            cell.being_attacked_by = []
+
         # Pheromone decay
         if self.tick % 3 == 0:  # Not every tick, CPU saving
             self.pheromones.decay()
@@ -1716,8 +1724,7 @@ class World:
                     cell.hibernating = False
                     cell.sprint_energy = 60
                     cell.sprinting = True
-                    cell.energy += 15.0               # Extra calories for the final rush
-                    cell.hp -= cell.max_hp * 0.15     # At the cost of muscle atrophy
+                    cell.hp -= cell.max_hp * 0.15     # Muscle atrophy cost for the final rush
                     cell.steer_towards(other.x, other.y, 1.0)
                     break
             # Omnivore hibernating: food also wakes it up
@@ -2959,8 +2966,10 @@ class World:
                 continue
             dx = prey.x - predator.x
             dy = prey.y - predator.y
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist < predator.radius + prey.radius + 3:
+            dist_sq = dx * dx + dy * dy
+            strike_dist = predator.radius + prey.radius + 3
+            if dist_sq < strike_dist * strike_dist:
+                dist = math.sqrt(dist_sq)  # Only sqrt when actually fighting (for knockback)
                 # --- Confusion effect: swarm confusion ---
                 # 5+ small herbivores together -> predator gets confused
                 if prey.pack_mates >= 5:

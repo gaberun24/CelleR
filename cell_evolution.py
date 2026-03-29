@@ -567,7 +567,7 @@ class Cell:
         # HP regeneráció (csak ha nem harcol és van energia)
         if not self.being_attacked_by and self.hp < self.max_hp and self.energy > 20:
             self.hp = min(self.max_hp, self.hp + self.hp_regen)
-        self.being_attacked_by = []  # Reset minden tick-ben
+        # being_attacked_by a World.update() elején nullázódik
         if self.damaged_flash > 0:
             self.damaged_flash -= 1
 
@@ -847,7 +847,11 @@ class Cell:
         """Taunt kibocsátás — szonár ping, hatótáv és sebesség a taunt_power géntől függ."""
         tp = self.genome.taunt_power
         self.taunt_type = taunt_type
-        self.taunt_timer = int(30 + tp * 15)  # Erősebb gén = hosszabb hullám (30-67 tick)
+        base_timer = int(30 + tp * 15)  # Erősebb gén = hosszabb hullám (30-67 tick)
+        # Ragadozó párzási hívás 2x messzebb hallatszik (ritka populáció, nagyobb hatótáv)
+        if taunt_type == 'mate' and self.genome.is_predator():
+            base_timer *= 2
+        self.taunt_timer = base_timer
         self.taunt_radius = 0.0
         self.taunt_target_id = target_id
         # Erősebb taunt = drágább (trade-off: energia vs hatótáv)
@@ -1398,6 +1402,10 @@ class World:
     def update(self):
         self.tick += 1
 
+        # Támadás-memória nullázás mielőtt bárki AI-ja lefutna (execution order desync fix)
+        for cell in self.cells:
+            cell.being_attacked_by = []
+
         # Feromon halványulás
         if self.tick % 3 == 0:  # Nem minden tick-ben, CPU kímélés
             self.pheromones.decay()
@@ -1673,7 +1681,6 @@ class World:
                     cell.hibernating = False
                     cell.sprint_energy = 60
                     cell.sprinting = True
-                    cell.energy += 15.0               # Extra kalória az utolsó rohamhoz
                     cell.hp -= cell.max_hp * 0.15     # Az izmok leépülése árán
                     cell.steer_towards(other.x, other.y, 1.0)
                     break
@@ -2916,8 +2923,10 @@ class World:
                 continue
             dx = prey.x - predator.x
             dy = prey.y - predator.y
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist < predator.radius + prey.radius + 3:
+            dist_sq = dx * dx + dy * dy
+            strike_dist = predator.radius + prey.radius + 3
+            if dist_sq < strike_dist * strike_dist:
+                dist = math.sqrt(dist_sq)  # Csak harc esetén sqrt (knockback-hez kell)
                 # --- Confusion effect: raj-zavar ---
                 # 5+ kicsi növényevő együtt → ragadozó összezavarodik
                 if prey.pack_mates >= 5:
