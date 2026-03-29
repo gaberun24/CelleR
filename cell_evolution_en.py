@@ -609,7 +609,12 @@ class Cell:
 
         # --- Sprint handling ---
         # Larger cells drain sprint faster
-        sprint_drain = 1.5 + self.genome.size * 0.15  # size 5=2.25, size 15=3.75, size 25=5.25
+        # Larger prey tires faster: size 5=1.9, size 15=4.5, size 25=8.5
+        # Predators are built for chasing — less size penalty
+        if self.genome.is_predator():
+            sprint_drain = 1.5 + self.genome.size * 0.12
+        else:
+            sprint_drain = 1.2 + self.genome.size * 0.29
         sprint_recharge = max(0.1, 0.6 - self.genome.size * 0.02)  # Larger ones recharge slower
         if self.sprint_cooldown > 0:
             self.sprint_cooldown -= 1

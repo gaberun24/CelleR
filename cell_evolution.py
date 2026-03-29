@@ -608,8 +608,12 @@ class Cell:
             self.angle += effective_turn if angle_diff > 0 else -effective_turn
 
         # --- Sprint kezelés ---
-        # Nagyobb sejtek gyorsabban merülnek ki sprintből
-        sprint_drain = 1.5 + self.genome.size * 0.15  # size 5=2.25, size 15=3.75, size 25=5.25
+        # Nagyobb préda gyorsabban fárad: size 5=2.65, size 15=5.55, size 25=8.45
+        # Ragadozók üldözésre termettek — kevesebb méret büntetés
+        if self.genome.is_predator():
+            sprint_drain = 1.5 + self.genome.size * 0.12
+        else:
+            sprint_drain = 1.2 + self.genome.size * 0.29
         sprint_recharge = max(0.1, 0.6 - self.genome.size * 0.02)  # Nagyobbak lassabban töltődnek
         if self.sprint_cooldown > 0:
             self.sprint_cooldown -= 1
