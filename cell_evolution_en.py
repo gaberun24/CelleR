@@ -522,6 +522,10 @@ class Cell:
 
         self.age += 1
         self.energy -= self.energy_cost_per_tick() * energy_drain
+        # Energy cap: can't store more than 2.5x reproduction threshold
+        max_energy = self.genome.repro_thresh * 2.5
+        if self.energy > max_energy:
+            self.energy = max_energy
         if self.mate_cooldown > 0:
             self.mate_cooldown -= 1
         if self.taunt_timer > 0:
@@ -3839,7 +3843,7 @@ class Renderer:
         child_str = " [JUVENILE]" if cell.is_child else (" [SEEKING MATE]" if cell.seeking_mate else "")
         lines = [
             f"HP: {cell.hp:.0f}/{cell.max_hp:.0f}  ({cell.hp_ratio:.0%}){child_str}",
-            f"Energy: {cell.energy:.0f} / {cell.genome.repro_thresh:.0f}",
+            f"Energy: {cell.energy:.0f} / {cell.genome.repro_thresh:.0f} (max:{cell.genome.repro_thresh * 2.5:.0f})",
             f"Age: {cell.age}  Gen: {cell.generation}",
             f"Children: {cell.children}  Kills: {cell.kills}",
             f"Damage/tick: {cell.damage_per_tick:.2f}",

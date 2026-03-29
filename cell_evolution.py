@@ -522,6 +522,10 @@ class Cell:
 
         self.age += 1
         self.energy -= self.energy_cost_per_tick() * energy_drain
+        # Energia plafon: max 2.5x szaporodási küszöb
+        max_energy = self.genome.repro_thresh * 2.5
+        if self.energy > max_energy:
+            self.energy = max_energy
         if self.mate_cooldown > 0:
             self.mate_cooldown -= 1
         if self.taunt_timer > 0:
@@ -3753,7 +3757,7 @@ class Renderer:
         child_str = " [KÖLYÖK]" if cell.is_child else (" [PÁRT KERES]" if cell.seeking_mate else "")
         lines = [
             f"HP: {cell.hp:.0f}/{cell.max_hp:.0f}  ({cell.hp_ratio:.0%}){child_str}",
-            f"Energia: {cell.energy:.0f} / {cell.genome.repro_thresh:.0f}",
+            f"Energia: {cell.energy:.0f} / {cell.genome.repro_thresh:.0f} (max:{cell.genome.repro_thresh * 2.5:.0f})",
             f"Kor: {cell.age}  Gen: {cell.generation}",
             f"Gyerekek: {cell.children}  Ölések: {cell.kills}",
             f"Sebzés/tick: {cell.damage_per_tick:.2f}",
