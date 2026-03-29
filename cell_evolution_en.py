@@ -4045,9 +4045,10 @@ class Renderer:
             self._action_cell_id = None
 
     def _draw_minimap(self, world):
-        """Minimap in top-left corner showing entire world."""
+        """Minimap below stats panel on the right."""
         mm_w, mm_h = 180, 180
-        mx, my = 10, 36
+        mx = self.screen_w - mm_w - 30
+        my = 250
         scale_x = mm_w / world.width
         scale_y = mm_h / world.height
 
@@ -4179,7 +4180,7 @@ class PetriDish:
 
         # Drop zone — fixed bottom-left corner, always visible
         self.drop_cx = 55
-        self.drop_cy = screen_h - 55
+        self.drop_cy = screen_h - 155
         self.drop_r = self.dish_r + 15
 
         # Buttons are recalculated when panel opens
@@ -4750,12 +4751,20 @@ class Game:
                     continue  # Just dragging, visual handled in draw
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
-                    # Drop cell into petri dish?
                     if self.renderer.dragging_cell:
-                        if self.renderer.petri_dish.is_in_drop_zone(*event.pos):
+                        # Check if mouse actually moved enough to count as drag
+                        ds = self.renderer.drag_start
+                        dx = event.pos[0] - ds[0] if ds else 0
+                        dy = event.pos[1] - ds[1] if ds else 0
+                        drag_dist = dx * dx + dy * dy
+                        if drag_dist > 400 and self.renderer.petri_dish.is_in_drop_zone(*event.pos):
+                            # Dropped on petri dish
                             self.renderer.petri_dish.capture_cell(self.renderer.dragging_cell)
                             self.renderer.selected_cell = self.renderer.dragging_cell
-                            self.paused = True  # Pause while editing
+                            self.paused = True
+                        elif drag_dist <= 400:
+                            # Short click — select the cell normally
+                            self.renderer.selected_cell = self.renderer.dragging_cell
                         self.renderer.dragging_cell = None
                     self.renderer.petri_dish.handle_release()
             elif event.type == pygame.MOUSEBUTTONDOWN:
