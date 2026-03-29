@@ -3401,11 +3401,13 @@ class Renderer:
                 if cell.taunt_timer > 0 and cell.taunt_type:
                     tp = cell.genome.taunt_power
                     max_timer = int(30 + tp * 15)
+                    if cell.taunt_type == 'mate' and cell.genome.is_predator():
+                        max_timer *= 2
                     t_progress = 1.0 - cell.taunt_timer / max(max_timer, 1)  # 0->1
                     wave_r = int(cell.taunt_radius * self.zoom)
                     # Stronger gene = brighter wave
                     base_alpha = int(100 + tp * 60)  # 100-250
-                    t_alpha = max(0, int(base_alpha * (1.0 - t_progress)))
+                    t_alpha = max(0, min(255, int(base_alpha * (1.0 - t_progress))))
                     # Line width depends on gene strength
                     line_w = max(1, int((1 + tp) * self.zoom))
 

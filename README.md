@@ -43,7 +43,7 @@ Cells move using a cilia-based propulsion system with two distinct locomotion st
 
 ### Taunt System (Sonar Ping Communication)
 Cells emit expanding ring waves that trigger once as the wavefront passes:
-- **Mate taunt** (pink) — attracts compatible mates from afar
+- **Mate taunt** (pink) — attracts compatible mates from afar (predators emit 2x range)
 - **Attack taunt** (red) — alpha predator orders pack to target specific prey, overrides existing targets
 - **Flee taunt** (yellow) — panic signal causing allies to flee with zigzag evasion
 - Hungry predators **eavesdrop** on prey taunts and are attracted to the sound
@@ -81,9 +81,34 @@ Cells emit expanding ring waves that trigger once as the wavefront passes:
 | Prey Scent | Herbivore/omnivore trail for predator tracking |
 | Corpse Scent | Expanding stench cloud from decaying carcasses |
 
+### Well-Fed Sluggishness
+- Herbivores and omnivores become slower and less alert when full (up to 35% debuff)
+- `alertness = 1.0 - fullness * 0.35` affects both speed and sense range
+- Creates natural boom-bust cycles: abundant food → fat prey → easy hunting → more predators
+- Predators are always sharp — no sluggishness penalty
+
+### Bounding Circle Collision
+- Same-type cells can't overlap or pass through each other
+- Mass-proportional push resolution (heavier cells move less)
+- Predator-prey pairs excluded from collision (so attacks aren't blocked)
+- Prevents unrealistic 50-cells-per-pixel clustering
+
+### Action Camera
+- Press `C` to toggle automatic cinematic camera
+- Auto-zooms to exciting events: combat, pack hunts, chases, panic signals
+- Event scoring system prioritizes the most dramatic moments
+- Holds 5-10 seconds per event with smooth lerp transitions
+- **Minimap** (180x180px, bottom-left) shows world overview when active
+
+### Population Cap
+- Configurable maximum cell count (default: 400, adjustable 50-1000 in settings)
+- When cap is reached, the most populous species stops reproducing
+- Other species can still reproduce, maintaining diversity
+- Hard cap prevents runaway population even if blocking isn't enough
+
 ### Hibernation
 - Predators/omnivores enter hibernation instead of dying (once per lifetime, max 500 ticks)
-- Metabolism drops to 1%, awakens with adrenaline burst when prey enters range
+- Metabolism drops to 1%, awakens with adrenaline burst when prey enters range (costs 15% max HP)
 - Omnivore hibernators also wake up for nearby food
 
 ### Fitness-Weighted Reproduction
@@ -117,6 +142,7 @@ python cell_evolution.py
 | `Arrow Keys` | Move camera |
 | `Scroll` | Zoom in / out |
 | `Click` | Select cell (view details + pheromone overlay) |
+| `C` | Toggle action camera (auto-zoom to events + minimap) |
 | `F` | Add food clusters |
 | `1` / `2` / `3` | Spawn herbivores / predators / omnivores |
 | `H` | Toggle headless mode (max simulation speed, no rendering) |
@@ -139,6 +165,7 @@ Press `M` to open the live settings panel:
 - **Reproduction Cost** — energy fraction spent on reproduction
 - **Mutation Rate** — chance of gene mutation per gene
 - **Mutation Strength** — magnitude of mutations
+- **Max Population** — population cap (50-1000)
 
 ## Architecture
 
