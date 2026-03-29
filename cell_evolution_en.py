@@ -628,75 +628,71 @@ class Cell:
             if self.sprint_cooldown <= 0:
                 self.sprint_energy = min(100, self.sprint_energy + sprint_recharge)
 
-        # Bite shock: stun -> no movement, slow -> reduced speed
+        # Bite shock: stun -> no thrust, just inertial slide
         if self.stun_ticks > 0:
             self.thrust = 0.0
             self.vx *= 0.8  # Inertial deceleration
             self.vy *= 0.8
             self.sprinting = False
-            # Position update (still slides a bit)
-            self.x += self.vx
-            self.y += self.vy
             self.cilia_phase += 0.02  # Minimal animation
-            return  # Nothing else happens
-
-        # Thrust calculation based on cilia configuration
-        thrust = self.thrust
-        # Apply slowdown
-        if self.slow_ticks > 0:
-            thrust *= self.slow_factor
-        # Predators sprint harder (hunting rush)
-        if self.sprinting:
-            sprint_mult = 2.2 if self.genome.is_predator() else 1.6
         else:
-            sprint_mult = 1.0
-        cilia_angles = self.genome.cilia_positions()
-        power = self.genome.cilia_power * sprint_mult * self.maturity  # Juvenile = weaker thrust
-        spread = self.genome.maneuverability  # 0=torpedo, 1=jellyfish
+            # Thrust calculation based on cilia configuration
+            thrust = self.thrust
+            # Apply slowdown
+            if self.slow_ticks > 0:
+                thrust *= self.slow_factor
+            # Predators sprint harder (hunting rush)
+            if self.sprinting:
+                sprint_mult = 2.2 if self.genome.is_predator() else 1.6
+            else:
+                sprint_mult = 1.0
+            cilia_angles = self.genome.cilia_positions()
+            power = self.genome.cilia_power * sprint_mult * self.maturity  # Juvenile = weaker thrust
+            spread = self.genome.maneuverability  # 0=torpedo, 1=jellyfish
 
-        # Mix of two components:
-        # 1) Torpedo force: cilia push in facing direction (traditional)
-        # 2) Jellyfish force: cilia push in DESIRED direction (direct strafing)
-        # The spread ratio determines which dominates
+            # Mix of two components:
+            # 1) Torpedo force: cilia push in facing direction (traditional)
+            # 2) Jellyfish force: cilia push in DESIRED direction (direct strafing)
+            # The spread ratio determines which dominates
 
-        # Torpedo component: each cilium pushes at its own angle (facing direction + offset)
-        torpedo_fx, torpedo_fy = 0.0, 0.0
-        for ca in cilia_angles:
-            abs_angle = self.angle + ca
-            torpedo_fx += math.cos(abs_angle) * power * thrust
-            torpedo_fy += math.sin(abs_angle) * power * thrust
+            # Torpedo component: each cilium pushes at its own angle (facing direction + offset)
+            torpedo_fx, torpedo_fy = 0.0, 0.0
+            for ca in cilia_angles:
+                abs_angle = self.angle + ca
+                torpedo_fx += math.cos(abs_angle) * power * thrust
+                torpedo_fy += math.sin(abs_angle) * power * thrust
 
-        # Jellyfish component: cilia coordinate in desired direction
-        # More cilia = stronger strafing
-        n_cilia = self.genome.num_cilia
-        medusa_force = n_cilia * power * thrust
-        medusa_fx = math.cos(self.desired_angle) * medusa_force
-        medusa_fy = math.sin(self.desired_angle) * medusa_force
+            # Jellyfish component: cilia coordinate in desired direction
+            # More cilia = stronger strafing
+            n_cilia = self.genome.num_cilia
+            medusa_force = n_cilia * power * thrust
+            medusa_fx = math.cos(self.desired_angle) * medusa_force
+            medusa_fy = math.sin(self.desired_angle) * medusa_force
 
-        # Mixing: spread=0 -> 100% torpedo, spread=1 -> 80% jellyfish + 20% torpedo
-        fx = torpedo_fx * (1.0 - spread * 0.8) + medusa_fx * spread * 0.8
-        fy = torpedo_fy * (1.0 - spread * 0.8) + medusa_fy * spread * 0.8
+            # Mixing: spread=0 -> 100% torpedo, spread=1 -> 80% jellyfish + 20% torpedo
+            fx = torpedo_fx * (1.0 - spread * 0.8) + medusa_fx * spread * 0.8
+            fy = torpedo_fy * (1.0 - spread * 0.8) + medusa_fy * spread * 0.8
 
-        # Apply force (bigger = heavier = slower acceleration)
-        mass = self.current_size * 0.8  # Stronger size-slowdown
-        self.vx += fx / mass
-        self.vy += fy / mass
+            # Apply force (bigger = heavier = slower acceleration)
+            mass = self.current_size * 0.8  # Stronger size-slowdown
+            self.vx += fx / mass
+            self.vy += fy / mass
 
-        # Friction (water resistance — bigger = more resistance)
-        drag = 0.92 - self.current_size * 0.001  # size 20 -> 0.90
-        drag = max(0.85, drag)
-        self.vx *= drag
-        self.vy *= drag
+            # Friction (water resistance — bigger = more resistance)
+            drag = 0.92 - self.current_size * 0.001  # size 20 -> 0.90
+            drag = max(0.85, drag)
+            self.vx *= drag
+            self.vy *= drag
 
-        # Speed limit: damage + juvenile + sprint
-        speed_mult = self.effective_speed_mult
-        max_spd = self.genome.max_speed * sprint_mult * speed_mult
-        spd = math.sqrt(self.vx ** 2 + self.vy ** 2)
-        if spd > max_spd:
-            self.vx = self.vx / spd * max_spd
-            self.vy = self.vy / spd * max_spd
+            # Speed limit: damage + juvenile + sprint
+            speed_mult = self.effective_speed_mult
+            max_spd = self.genome.max_speed * sprint_mult * speed_mult
+            spd = math.sqrt(self.vx ** 2 + self.vy ** 2)
+            if spd > max_spd:
+                self.vx = self.vx / spd * max_spd
+                self.vy = self.vy / spd * max_spd
 
-        # Position update
+        # Position update (ALWAYS runs — stunned cells still slide + get bounded)
         self.x += self.vx
         self.y += self.vy
 
@@ -1842,7 +1838,7 @@ class World:
 
                 if ally.taunt_type == 'mate':
                     # Mating call -> if ready to mate, sprint toward caller
-                    if cell.wants_to_mate() and not cell.seeking_mate:
+                    if cell.wants_to_mate() and not cell.seeking_mate and abs(cell.genome.diet - ally.genome.diet) < 0.15:
                         cell.seeking_mate = True
                         cell.mate_target_id = ally.id
                     if cell.seeking_mate:
@@ -2667,8 +2663,11 @@ class World:
                 cell.remember_danger(attacker.x, attacker.y)
                 return
             else:
-                # Attacker not visible -> flee opposite to facing direction
-                cell.desired_angle += math.pi  # 180 degree turn
+                # Attacker not visible -> sprint in current momentum direction
+                if abs(cell.vx) < 0.5 and abs(cell.vy) < 0.5:
+                    cell.desired_angle = random.uniform(0, 2 * math.pi)
+                else:
+                    cell.desired_angle = math.atan2(cell.vy, cell.vx)
                 cell.thrust = 1.0
                 if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
                     cell.sprinting = True

@@ -627,75 +627,71 @@ class Cell:
             if self.sprint_cooldown <= 0:
                 self.sprint_energy = min(100, self.sprint_energy + sprint_recharge)
 
-        # Harapás-sokk: bénulás → nem mozog, lassulás → csökkentett sebesség
+        # Harapás-sokk: bénulás → nem mozog, csak csúszik
         if self.stun_ticks > 0:
             self.thrust = 0.0
             self.vx *= 0.8  # Tehetetlenségi lassulás
             self.vy *= 0.8
             self.sprinting = False
-            # Pozíció frissítés (még csúszik kicsit)
-            self.x += self.vx
-            self.y += self.vy
             self.cilia_phase += 0.02  # Minimális animáció
-            return  # Semmi más nem történik
-
-        # Hajtóerő számítás a csillók konfigurációja alapján
-        thrust = self.thrust
-        # Lassulás alkalmazása
-        if self.slow_ticks > 0:
-            thrust *= self.slow_factor
-        # Ragadozók erősebben sprintelnek (vadász roham)
-        if self.sprinting:
-            sprint_mult = 2.2 if self.genome.is_predator() else 1.6
         else:
-            sprint_mult = 1.0
-        cilia_angles = self.genome.cilia_positions()
-        power = self.genome.cilia_power * sprint_mult * self.maturity  # Gyerek = gyengébb tolóerő
-        spread = self.genome.maneuverability  # 0=torpedó, 1=medúza
+            # Hajtóerő számítás a csillók konfigurációja alapján
+            thrust = self.thrust
+            # Lassulás alkalmazása
+            if self.slow_ticks > 0:
+                thrust *= self.slow_factor
+            # Ragadozók erősebben sprintelnek (vadász roham)
+            if self.sprinting:
+                sprint_mult = 2.2 if self.genome.is_predator() else 1.6
+            else:
+                sprint_mult = 1.0
+            cilia_angles = self.genome.cilia_positions()
+            power = self.genome.cilia_power * sprint_mult * self.maturity  # Gyerek = gyengébb tolóerő
+            spread = self.genome.maneuverability  # 0=torpedó, 1=medúza
 
-        # Két komponens keveréke:
-        # 1) Torpedó erő: csillók a nézési irányba tolják (hagyományos)
-        # 2) Medúza erő: csillók a KÍVÁNT irányba tolják (közvetlen oldalazás)
-        # A spread arány dönti el melyik dominál
+            # Két komponens keveréke:
+            # 1) Torpedó erő: csillók a nézési irányba tolják (hagyományos)
+            # 2) Medúza erő: csillók a KÍVÁNT irányba tolják (közvetlen oldalazás)
+            # A spread arány dönti el melyik dominál
 
-        # Torpedó komponens: minden csilló a saját szögébe tol (nézési irány + offset)
-        torpedo_fx, torpedo_fy = 0.0, 0.0
-        for ca in cilia_angles:
-            abs_angle = self.angle + ca
-            torpedo_fx += math.cos(abs_angle) * power * thrust
-            torpedo_fy += math.sin(abs_angle) * power * thrust
+            # Torpedó komponens: minden csilló a saját szögébe tol (nézési irány + offset)
+            torpedo_fx, torpedo_fy = 0.0, 0.0
+            for ca in cilia_angles:
+                abs_angle = self.angle + ca
+                torpedo_fx += math.cos(abs_angle) * power * thrust
+                torpedo_fy += math.sin(abs_angle) * power * thrust
 
-        # Medúza komponens: csillók a kívánt irányba koordinálnak
-        # Minél több csilló, annál erősebb az oldalazás
-        n_cilia = self.genome.num_cilia
-        medusa_force = n_cilia * power * thrust
-        medusa_fx = math.cos(self.desired_angle) * medusa_force
-        medusa_fy = math.sin(self.desired_angle) * medusa_force
+            # Medúza komponens: csillók a kívánt irányba koordinálnak
+            # Minél több csilló, annál erősebb az oldalazás
+            n_cilia = self.genome.num_cilia
+            medusa_force = n_cilia * power * thrust
+            medusa_fx = math.cos(self.desired_angle) * medusa_force
+            medusa_fy = math.sin(self.desired_angle) * medusa_force
 
-        # Keverés: spread=0 → 100% torpedó, spread=1 → 80% medúza + 20% torpedó
-        fx = torpedo_fx * (1.0 - spread * 0.8) + medusa_fx * spread * 0.8
-        fy = torpedo_fy * (1.0 - spread * 0.8) + medusa_fy * spread * 0.8
+            # Keverés: spread=0 → 100% torpedó, spread=1 → 80% medúza + 20% torpedó
+            fx = torpedo_fx * (1.0 - spread * 0.8) + medusa_fx * spread * 0.8
+            fy = torpedo_fy * (1.0 - spread * 0.8) + medusa_fy * spread * 0.8
 
-        # Erő alkalmazása (nagyobb = nehezebb = lassabb gyorsulás)
-        mass = self.current_size * 0.8  # Erősebb méret-lassúság
-        self.vx += fx / mass
-        self.vy += fy / mass
+            # Erő alkalmazása (nagyobb = nehezebb = lassabb gyorsulás)
+            mass = self.current_size * 0.8  # Erősebb méret-lassúság
+            self.vx += fx / mass
+            self.vy += fy / mass
 
-        # Súrlódás (víz ellenállás — nagyobb = több ellenállás)
-        drag = 0.92 - self.current_size * 0.001  # size 20 → 0.90
-        drag = max(0.85, drag)
-        self.vx *= drag
-        self.vy *= drag
+            # Súrlódás (víz ellenállás — nagyobb = több ellenállás)
+            drag = 0.92 - self.current_size * 0.001  # size 20 → 0.90
+            drag = max(0.85, drag)
+            self.vx *= drag
+            self.vy *= drag
 
-        # Sebesség limit: sérülés + gyerekkor + sprint
-        speed_mult = self.effective_speed_mult
-        max_spd = self.genome.max_speed * sprint_mult * speed_mult
-        spd = math.sqrt(self.vx ** 2 + self.vy ** 2)
-        if spd > max_spd:
-            self.vx = self.vx / spd * max_spd
-            self.vy = self.vy / spd * max_spd
+            # Sebesség limit: sérülés + gyerekkor + sprint
+            speed_mult = self.effective_speed_mult
+            max_spd = self.genome.max_speed * sprint_mult * speed_mult
+            spd = math.sqrt(self.vx ** 2 + self.vy ** 2)
+            if spd > max_spd:
+                self.vx = self.vx / spd * max_spd
+                self.vy = self.vy / spd * max_spd
 
-        # Pozíció frissítés
+        # Pozíció frissítés (MINDIG lefut — kábult sejtek is csúsznak + falba ütköznek)
         self.x += self.vx
         self.y += self.vy
 
@@ -1798,7 +1794,7 @@ class World:
 
                 if ally.taunt_type == 'mate':
                     # Párzási hívás → ha kész a párzásra, sprint a hívó felé
-                    if cell.wants_to_mate() and not cell.seeking_mate:
+                    if cell.wants_to_mate() and not cell.seeking_mate and abs(cell.genome.diet - ally.genome.diet) < 0.15:
                         cell.seeking_mate = True
                         cell.mate_target_id = ally.id
                     if cell.seeking_mate:
@@ -2623,8 +2619,11 @@ class World:
                 cell.remember_danger(attacker.x, attacker.y)
                 return
             else:
-                # Támadó nem látható → menekülj az ellenkező irányba mint ahová nézel
-                cell.desired_angle += math.pi  # 180° fordulás
+                # Támadó nem látható → sprintelj a lendület irányába
+                if abs(cell.vx) < 0.5 and abs(cell.vy) < 0.5:
+                    cell.desired_angle = random.uniform(0, 2 * math.pi)
+                else:
+                    cell.desired_angle = math.atan2(cell.vy, cell.vx)
                 cell.thrust = 1.0
                 if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
                     cell.sprinting = True
