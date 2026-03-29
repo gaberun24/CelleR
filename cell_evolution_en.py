@@ -4204,10 +4204,10 @@ class PetriDish:
     def release_cell(self):
         """Release the cell back into the world with modified genes."""
         if self.cell:
-            size = self.cell.genome.size
-            self.cell.max_hp = size * 2.5 + self.cell.genome.defense * 1.5
-            self.cell.hp = min(self.cell.hp, self.cell.max_hp)
-            self.cell.current_size = size  # radius is derived from this
+            # Recalc HP from new genes (size and defense may have changed)
+            new_max_hp = self.cell.genome.size ** 2 * 0.5
+            self.cell.max_hp = new_max_hp
+            self.cell.hp = min(self.cell.hp, new_max_hp)
         self.cell = None
         self.visible = False
 
