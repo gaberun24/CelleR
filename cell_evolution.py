@@ -2041,6 +2041,19 @@ class World:
 
         # === FÁZIS 2: Jóllakott pihenés (CSAK ha nincs tetem a közelben) ===
         if hunger < 30 and not cell.ambushing:
+            # Surplus killing: agresszív ragadozók területvédők —
+            # leölik ami túl közel jön, még jóllakottan is
+            aggr = cell.genome.aggression
+            if aggr > 0.6 and enemies:
+                territory_range = cell.radius * 6 + aggr * 30  # Nagyobb agresszió = nagyobb terület
+                for prey, dist in enemies:
+                    if dist < territory_range and not prey.genome.is_predator():
+                        cell.target_id = prey.id
+                        cell.steer_towards(prey.x, prey.y, 0.7 + aggr * 0.3)
+                        if dist < cell.radius * 4 and cell.sprint_energy > 20:
+                            cell.sprinting = True
+                        return
+            # Békés ragadozó (alacsony agresszió): csak alszik
             cell.thrust = 0.08 + random.random() * 0.05
             cell.target_id = None
             cell.sprinting = False

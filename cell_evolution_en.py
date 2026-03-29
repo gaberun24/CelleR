@@ -2084,6 +2084,19 @@ class World:
 
         # === PHASE 2: Well-fed rest (ONLY if no corpse nearby) ===
         if hunger < 30 and not cell.ambushing:
+            # Surplus killing: highly aggressive predators are territorial —
+            # they attack prey that wanders too close, even when full
+            aggr = cell.genome.aggression
+            if aggr > 0.6 and enemies:
+                territory_range = cell.radius * 6 + aggr * 30  # Higher aggression = larger territory
+                for prey, dist in enemies:
+                    if dist < territory_range and not prey.genome.is_predator():
+                        cell.target_id = prey.id
+                        cell.steer_towards(prey.x, prey.y, 0.7 + aggr * 0.3)
+                        if dist < cell.radius * 4 and cell.sprint_energy > 20:
+                            cell.sprinting = True
+                        return
+            # Peaceful predator (low aggression): just sleep it off
             cell.thrust = 0.08 + random.random() * 0.05
             cell.target_id = None
             cell.sprinting = False
