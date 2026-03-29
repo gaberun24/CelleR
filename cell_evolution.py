@@ -410,9 +410,9 @@ class Cell:
         # Hibernáció: minimális anyagcsere (1%)
         if self.hibernating:
             return 0.002
-        base = 0.018 if not self.genome.is_predator() else 0.04
+        base = 0.018 if not self.genome.is_predator() else 0.03
         if self.genome.is_omnivore():
-            base = 0.025  # Mindenevő: közepes
+            base = 0.022  # Mindenevő: közepes
         size_cost = self.genome.size * 0.003
         # Csilló fenntartási költség
         cilia_cost = self.genome.num_cilia * self.genome.cilia_power * 0.006
@@ -427,10 +427,9 @@ class Cell:
         # Lesbenállás / rejtőzés: minimális energia
         if self.ambushing or self.hiding:
             return base * AMBUSH_ENERGY_MULT + size_cost * 0.5
-        # Ragadozók hatékonyabb mozgással, de éhesebb anyagcserével
+        # Ragadozók: támadás olcsóbb (erre specializálódtak)
         if self.genome.is_predator():
-            attack_cost = self.genome.attack * 0.002
-            base = 0.04
+            attack_cost = self.genome.attack * 0.001
         else:
             attack_cost = self.genome.attack * 0.004
         sense_cost = self.genome.sense_range * 0.00012
@@ -1437,82 +1436,97 @@ class World:
                 best_prey = other
                 best_score = score
 
-        if best_prey and random.random() < cell.genome.aggression:
-            # --- ROI vadászat: megéri-e még üldözni? ---
-            expected_corpse = best_prey.energy * 0.5 + best_prey.genome.size ** 2 * 0.8
-            roi_limit = expected_corpse * 0.35
-
-            if cell.chase_target_id == best_prey.id:
-                cell.chase_energy_spent += cell.energy_cost_per_tick() * (2.0 if cell.sprinting else 1.0)
-                if cell.chase_energy_spent > roi_limit:
-                    cell.target_id = None
-                    cell.sprinting = False
-                    cell.chase_energy_spent = 0.0
-                    cell.chase_target_id = None
-                    cell.remember_hunt(best_prey, False, best_prey.x, best_prey.y)
-                    cell.wander()
-                    return
-            else:
-                cell.chase_target_id = best_prey.id
-                cell.chase_energy_spent = 0.0
-
-            # Lesből támadás
-            if cell.ambushing:
-                cell.ambushing = False
-                cell.hiding = False
-                cell.ambush_ticks = 0
-                cell.sprinting = True
-
-            cell.target_id = best_prey.id
+        if best_prey:
+            # Támadási döntés:
+            # - Lesből: MINDIG támad (az egész lényege!)
+            # - Éhes (300+ tick): MINDIG támad (túlélési ösztön)
+            # - Préda nagyon közel (< sense*0.25): MINDIG támad (elszalasztott lehetőség)
+            # - Egyébként: aggression alapú döntés
             dx = best_prey.x - cell.x
             dy = best_prey.y - cell.y
             prey_dist = math.sqrt(dx * dx + dy * dy)
 
-            # --- Interceptor: a préda mozgási irányába előre céloz ---
-            prey_speed = math.sqrt(best_prey.vx ** 2 + best_prey.vy ** 2)
-            if prey_speed > 0.3 and prey_dist > cell.radius * 3:
-                # Becsült elfogási pont: hova fog érni a préda mire odaér
-                my_speed = max(0.5, math.sqrt(cell.vx ** 2 + cell.vy ** 2))
-                intercept_time = prey_dist / max(my_speed + prey_speed, 1)
-                intercept_time = min(intercept_time, 40)  # Max 40 tick előre
-                target_x = best_prey.x + best_prey.vx * intercept_time * 0.7
-                target_y = best_prey.y + best_prey.vy * intercept_time * 0.7
+            will_attack = (cell.ambushing or
+                           hunger > 300 or
+                           prey_dist < sense * 0.25 or
+                           random.random() < cell.genome.aggression)
+
+            if not will_attack:
+                # Nem támad, de megjegyzi hol volt préda
+                cell.wander()
             else:
-                target_x = best_prey.x
-                target_y = best_prey.y
+                # --- ROI vadászat: megéri-e még üldözni? ---
+                expected_corpse = best_prey.energy * 0.5 + best_prey.genome.size ** 2 * 0.8
+                roi_limit = expected_corpse * 0.35
 
-            # --- Sprint aktiválás ---
-            if prey_dist < sense * 0.4 and cell.sprint_energy > 30 and cell.sprint_cooldown <= 0:
-                cell.sprinting = True
-            elif prey_dist > sense * 0.6:
-                cell.sprinting = False
+                if cell.chase_target_id == best_prey.id:
+                    cell.chase_energy_spent += cell.energy_cost_per_tick() * (2.0 if cell.sprinting else 1.0)
+                    if cell.chase_energy_spent > roi_limit:
+                        cell.target_id = None
+                        cell.sprinting = False
+                        cell.chase_energy_spent = 0.0
+                        cell.chase_target_id = None
+                        cell.remember_hunt(best_prey, False, best_prey.x, best_prey.y)
+                        cell.wander()
+                        return
+                else:
+                    cell.chase_target_id = best_prey.id
+                    cell.chase_energy_spent = 0.0
 
-            # Energiatakarékos megközelítés
-            if prey_dist > sense * 0.5:
-                approach_thrust = 0.45
-            elif prey_dist > sense * 0.25:
-                approach_thrust = 0.65
-            else:
-                approach_thrust = 0.9
-            cell.steer_towards(target_x, target_y, approach_thrust)
+                # Lesből támadás — azonnali sprint roham!
+                if cell.ambushing:
+                    cell.ambushing = False
+                    cell.hiding = False
+                    cell.ambush_ticks = 0
+                    cell.sprinting = True
+                    cell.sprint_energy = max(cell.sprint_energy, 60)  # Garantált sprint
 
-            # --- Falkavadászat jelzés ---
-            if cell.genome.social > 0.4:
-                for ally, adist in allies:
-                    if adist < sense * 0.6 and ally.genome.social > 0.3:
-                        if ally.target_id is None or ally.target_id != best_prey.id:
-                            ally.target_id = best_prey.id
+                cell.target_id = best_prey.id
 
-            # --- Bekerítés: falkatagok oldalról közelítenek ---
-            if cell.genome.social > 0.4 and allies:
-                pack_count = sum(1 for a, d in allies if a.target_id == best_prey.id)
-                if pack_count > 0:
-                    d = max(prey_dist, 1)
-                    side = 1 if cell.id % 2 == 0 else -1
-                    offset = cell.radius * 4 * side
-                    tx = target_x + (-dy / d) * offset
-                    ty = target_y + (dx / d) * offset
-                    cell.steer_towards(tx, ty, 0.75)
+                # --- Interceptor: a préda mozgási irányába előre céloz ---
+                prey_speed = math.sqrt(best_prey.vx ** 2 + best_prey.vy ** 2)
+                if prey_speed > 0.3 and prey_dist > cell.radius * 3:
+                    my_speed = max(0.5, math.sqrt(cell.vx ** 2 + cell.vy ** 2))
+                    intercept_time = prey_dist / max(my_speed + prey_speed, 1)
+                    intercept_time = min(intercept_time, 40)
+                    target_x = best_prey.x + best_prey.vx * intercept_time * 0.7
+                    target_y = best_prey.y + best_prey.vy * intercept_time * 0.7
+                else:
+                    target_x = best_prey.x
+                    target_y = best_prey.y
+
+                # --- Sprint aktiválás ---
+                if prey_dist < sense * 0.5 and cell.sprint_energy > 20 and cell.sprint_cooldown <= 0:
+                    cell.sprinting = True
+                elif prey_dist > sense * 0.7:
+                    cell.sprinting = False
+
+                # Megközelítés — közelről agresszívebb
+                if prey_dist > sense * 0.5:
+                    approach_thrust = 0.5
+                elif prey_dist > sense * 0.2:
+                    approach_thrust = 0.75
+                else:
+                    approach_thrust = 1.0  # Teljes gáz közelről!
+                cell.steer_towards(target_x, target_y, approach_thrust)
+
+                # --- Falkavadászat jelzés ---
+                if cell.genome.social > 0.4:
+                    for ally, adist in allies:
+                        if adist < sense * 0.6 and ally.genome.social > 0.3:
+                            if ally.target_id is None or ally.target_id != best_prey.id:
+                                ally.target_id = best_prey.id
+
+                # --- Bekerítés: falkatagok oldalról közelítenek ---
+                if cell.genome.social > 0.4 and allies:
+                    pack_count = sum(1 for a, d in allies if a.target_id == best_prey.id)
+                    if pack_count > 0:
+                        d = max(prey_dist, 1)
+                        side = 1 if cell.id % 2 == 0 else -1
+                        offset = cell.radius * 4 * side
+                        tx = target_x + (-dy / d) * offset
+                        ty = target_y + (dx / d) * offset
+                        cell.steer_towards(tx, ty, 0.75)
         else:
             cell.target_id = None
             cell.sprinting = False
@@ -1984,7 +1998,7 @@ class World:
                 if is_omni:
                     digest_eff = 0.75  # Mindenevő: közepes mindennél
                 elif is_pred:
-                    digest_eff = 0.7   # Ragadozó: húsra specializált
+                    digest_eff = 0.85  # Ragadozó: húsra specializált
                 else:
                     digest_eff = 0.9   # Növényevő: növényre specializált
                 cell.energy += bite * digest_eff
