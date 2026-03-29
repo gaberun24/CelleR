@@ -65,6 +65,31 @@ NUM_OBSTACLES = 8          # Number of rocks
 OBSTACLE_MIN_SIZE = 30     # Minimum size
 OBSTACLE_MAX_SIZE = 80     # Maximum size
 
+# Disease system (population density control)
+DISEASE_CHECK_INTERVAL = 200  # Check for outbreak every N ticks
+DISEASE_OUTBREAK_THRESHOLD = 0.38  # Species must be >38% of population to risk outbreak
+DISEASE_OUTBREAK_CHANCE = 0.30  # Chance per check when above threshold
+DISEASE_SPREAD_RANGE = 80    # How close cells must be to spread disease
+DISEASE_SPREAD_CHANCE = 0.04 # Per-tick chance to infect nearby same-species cell
+DISEASE_DURATION = 250       # How many ticks a cell stays sick
+DISEASE_IMMUNITY = 800       # Immunity ticks after recovery
+DISEASE_ENERGY_DRAIN = 0.06  # Extra energy cost per tick when sick
+DISEASE_SPEED_PENALTY = 0.7  # Speed multiplier when sick (30% slower)
+
+# Trail (path visualization)
+TRAIL_INTERVAL = 3         # Record position every N ticks
+TRAIL_MAX_LEN = 80         # Max trail points per cell (~240 ticks of history)
+TRAIL_ALPHA_MAX = 50       # Trail line max opacity (0-255)
+
+# Watering holes
+NUM_WATER_SOURCES = 3      # Number of watering holes
+WATER_RADIUS = 55          # Watering hole radius (cells drink at the edge)
+WATER_MIN_DIST_FROM_FOOD = 500  # Minimum distance from any oasis
+THIRST_MAX = 100.0         # Maximum thirst level
+THIRST_DRAIN = 0.018       # Thirst decrease per tick (base)
+THIRST_DRINK_RATE = 3.5    # Thirst recovery per tick when drinking
+DEHYDRATION_DMG = 0.08     # HP damage per tick when thirst = 0
+
 # Eating system
 EAT_SPEED = 1.0            # Energy extracted per tick
 FOOD_MIN_ENERGY = 0.5      # Food disappears below this
@@ -137,41 +162,47 @@ class Genome:
                 random.uniform(0.2, 1.2),   # taunt_power (volume)
                 random.uniform(0.0, 0.5),   # stealth (stealth ability)
             ], dtype=float)
+        self._cache = {}  # Cached derived values (invalidated on gene change)
 
     @property
-    def size(self): return np.clip(self.genes[0], 3, 25)
+    def size(self): return max(3, min(25, self.genes[0]))
     @property
-    def sense_range(self): return np.clip(self.genes[1], 15, 350)
+    def sense_range(self): return max(15, min(350, self.genes[1]))
     @property
-    def attack(self): return np.clip(self.genes[2], 0, 15)
+    def attack(self):
+        base = max(0, min(15, self.genes[2]))
+        # Predators have minimum combat capability (claws/teeth don't disappear)
+        if self.diet > 0.7:
+            base = max(2.0, base)
+        return base
     @property
-    def defense(self): return np.clip(self.genes[3], 0, 15)
+    def defense(self): return max(0, min(15, self.genes[3]))
     @property
-    def metabolism(self): return np.clip(self.genes[4], 0.2, 1.0)
+    def metabolism(self): return max(0.2, min(1.0, self.genes[4]))
     @property
-    def diet(self): return np.clip(self.genes[5], 0, 1)
+    def diet(self): return max(0, min(1, self.genes[5]))
     @property
-    def repro_thresh(self): return np.clip(self.genes[6], 40, 300)
+    def repro_thresh(self): return max(40, min(300, self.genes[6]))
     @property
     def hue(self): return self.genes[7] % 360
     @property
-    def aggression(self): return np.clip(self.genes[8], 0, 1)
+    def aggression(self): return max(0, min(1, self.genes[8]))
     @property
-    def social(self): return np.clip(self.genes[9], 0, 1)
+    def social(self): return max(0, min(1, self.genes[9]))
     @property
-    def num_cilia(self): return int(np.clip(round(self.genes[10]), 1, 8))
+    def num_cilia(self): return max(1, min(8, int(round(self.genes[10]))))
     @property
-    def cilia_spread(self): return np.clip(self.genes[11], 0, 1)
+    def cilia_spread(self): return max(0, min(1, self.genes[11]))
     @property
-    def cilia_power(self): return np.clip(self.genes[12], 0.2, 3.0)
+    def cilia_power(self): return max(0.2, min(3.0, self.genes[12]))
     @property
-    def turn_rate(self): return np.clip(self.genes[13], 0.01, 0.25)
+    def turn_rate(self): return max(0.01, min(0.25, self.genes[13]))
     @property
-    def litter_size(self): return int(np.clip(round(self.genes[14]), 1, 4))
+    def litter_size(self): return max(1, min(4, int(round(self.genes[14]))))
     @property
-    def taunt_power(self): return np.clip(self.genes[15] if len(self.genes) > 15 else 0.5, 0.05, 2.5)
+    def taunt_power(self): return max(0.05, min(2.5, self.genes[15] if len(self.genes) > 15 else 0.5))
     @property
-    def stealth(self): return np.clip(self.genes[16] if len(self.genes) > 16 else 0.2, 0.0, 1.0)
+    def stealth(self): return max(0.0, min(1.0, self.genes[16] if len(self.genes) > 16 else 0.2))
 
     @property
     def max_speed(self):
@@ -194,22 +225,35 @@ class Genome:
         """
         return self.cilia_spread
 
+    def _invalidate_cache(self):
+        """Clear cached derived values (call after gene modification)."""
+        self._cache = {}
+
     def cilia_positions(self):
-        """Cilia positions around the cell (angle list), 0 = forward."""
+        """Cilia positions around the cell (angle list), 0 = forward. Cached."""
+        if 'cilia_pos' in self._cache:
+            return self._cache['cilia_pos']
         n = self.num_cilia
         spread = self.cilia_spread
         if n == 1:
-            return [0.0]
-        # spread=0: all at 0 degrees (forward), spread=1: evenly around
-        angles = []
-        total_arc = spread * 2 * math.pi  # from 0 to 2*pi
-        if total_arc < 0.01:
-            return [0.0] * n
-        start = -total_arc / 2
-        for i in range(n):
-            angle = start + (total_arc * i / (n - 1)) if n > 1 else 0
-            angles.append(angle)
-        return angles
+            result = [0.0]
+        elif spread * 2 * math.pi < 0.01:
+            result = [0.0] * n
+        else:
+            total_arc = spread * 2 * math.pi
+            start = -total_arc / 2
+            result = [start + (total_arc * i / (n - 1)) if n > 1 else 0 for i in range(n)]
+        self._cache['cilia_pos'] = result
+        return result
+
+    def cilia_cos_sin(self):
+        """Pre-computed (cos, sin) for each cilium offset. Cached."""
+        if 'cilia_cs' in self._cache:
+            return self._cache['cilia_cs']
+        angles = self.cilia_positions()
+        result = [(math.cos(a), math.sin(a)) for a in angles]
+        self._cache['cilia_cs'] = result
+        return result
 
     def is_predator(self):
         return self.diet > 0.7
@@ -238,7 +282,7 @@ class Genome:
         For some genes, takes the weighted average of both parents (blend)."""
         total = self_fitness + other_fitness + 0.001
         # Better parent's genes are inherited 55-75% of the time
-        self_ratio = np.clip(self_fitness / total, 0.3, 0.7)
+        self_ratio = max(0.3, min(0.7, self_fitness / total))
 
         child_genes = np.empty_like(self.genes)
         for i in range(len(self.genes)):
@@ -447,6 +491,18 @@ class Cell:
         self.taunt_target_id = None    # Attack taunt target id
         self.taunt_radius = 0.0        # Taunt wave current radius (visual)
         self.flee_zigzag_phase = 0.0   # Flee zigzag phase (unique frequency)
+        self.ai_state = ""             # Current AI state (for HUD display)
+        # --- Thirst system ---
+        self.thirst = THIRST_MAX       # Starts fully hydrated
+        self.known_water = []          # Known watering hole coords [(x, y), ...]
+        self.drinking = False          # Currently drinking at water edge
+        # --- Trail (path visualization) ---
+        self.trail = []                # Recent positions [(x, y), ...] max TRAIL_MAX_LEN
+        self.trail_tick = 0            # Counter for trail sampling
+        # --- Disease system ---
+        self.sick = False              # Currently infected
+        self.sick_ticks = 0            # How long sick (counts down)
+        self.immune_ticks = 0          # Immunity after recovery (counts down)
 
     @property
     def current_size(self):
@@ -467,7 +523,7 @@ class Cell:
     def damage_per_tick(self):
         """Damage dealt: attack * size multiplier."""
         size_mult = self.current_size / 10.0  # size 10 = 1x, size 20 = 2x
-        return self.genome.attack * size_mult * 0.3
+        return self.genome.attack * size_mult * 0.5
 
     @property
     def alertness(self):
@@ -482,7 +538,11 @@ class Cell:
         """Speed multiplier: damage + size slowdown + well-fed sluggishness."""
         hp_mult = max(0.25, self.hp_ratio)  # Half speed at half health
         child_bonus = 1.3 if self.is_child else 1.0  # Juveniles are faster
-        return hp_mult * child_bonus * self.alertness
+        # Omnivores are slower: dual digestive system = heavier body
+        omni_penalty = 0.85 if self.genome.is_omnivore() else 1.0
+        # Disease makes you slower
+        sick_penalty = DISEASE_SPEED_PENALTY if self.sick else 1.0
+        return hp_mult * child_bonus * self.alertness * omni_penalty * sick_penalty
 
     def energy_cost_per_tick(self):
         # Hibernation: minimal metabolism (1%)
@@ -490,7 +550,7 @@ class Cell:
             return 0.002
         base = 0.018 if not self.genome.is_predator() else 0.02
         if self.genome.is_omnivore():
-            base = 0.02  # Omnivore: medium
+            base = 0.025  # Omnivore: dual digestive system is expensive
         size_cost = self.genome.size * 0.003
         # Cilia maintenance cost
         cilia_cost = self.genome.num_cilia * self.genome.cilia_power * 0.006
@@ -543,8 +603,8 @@ class Cell:
                 self.slow_factor = 1.0
 
         if self.energy <= MIN_CELL_ENERGY:
-            # Predators and omnivores can hibernate instead of dying — BUT only once!
-            if not self.hibernating and not self.has_hibernated and (self.genome.is_predator() or self.genome.is_omnivore()):
+            # Only predators can hibernate — specialist ambush trait
+            if not self.hibernating and not self.has_hibernated and self.genome.is_predator():
                 self.hibernating = True
                 self.has_hibernated = True  # Can hibernate once in lifetime
                 self.hibernate_ticks = 0
@@ -554,8 +614,35 @@ class Cell:
                 self.vx = 0.0
                 self.vy = 0.0
             else:
+                # Starvation: energy stays at 0, HP drains instead of instant death
+                self.energy = 0
+                starvation_dmg = 0.15 + self.genome.size * 0.02  # Bigger cells starve faster
+                self.hp -= starvation_dmg
+                self.damaged_flash = 3  # Visual feedback
+                self.ai_state = "Starving!"
+                if self.hp <= 0:
+                    self.alive = False
+                    return
+
+        # --- Thirst system ---
+        if not self.hibernating and not self.drinking:
+            # Moving faster = thirstier; bigger cells = thirstier
+            speed = math.sqrt(self.vx * self.vx + self.vy * self.vy)
+            speed_mult = 1.0 + speed * 0.15
+            size_mult = 0.8 + self.genome.size * 0.03
+            self.thirst -= THIRST_DRAIN * speed_mult * size_mult * energy_drain
+            self.thirst = max(0, self.thirst)
+        if self.thirst <= 0:
+            # Dehydration: HP drain (like starvation but worse)
+            dehydration_dmg = DEHYDRATION_DMG + self.genome.size * 0.02
+            self.hp -= dehydration_dmg
+            self.damaged_flash = 3
+            if self.ai_state not in ("Starving!",):
+                self.ai_state = "Thirsty!"
+            if self.hp <= 0:
                 self.alive = False
                 return
+        self.drinking = False  # Reset each tick (set by World._drink_water)
 
         # Hibernation time limit: max ~500 ticks, then dies
         if self.hibernating:
@@ -563,6 +650,8 @@ class Cell:
             if self.hibernate_ticks > 500:
                 self.alive = False
                 return
+            # Hibernating cells don't lose thirst (dormant)
+            self.thirst = min(THIRST_MAX, self.thirst + THIRST_DRAIN * 0.5)
 
         # --- HP system ---
         if self.hp <= 0:
@@ -575,6 +664,17 @@ class Cell:
         if self.damaged_flash > 0:
             self.damaged_flash -= 1
 
+        # --- Disease effects ---
+        if self.sick:
+            self.sick_ticks -= 1
+            self.energy -= DISEASE_ENERGY_DRAIN
+            if self.sick_ticks <= 0:
+                # Recovery!
+                self.sick = False
+                self.immune_ticks = DISEASE_IMMUNITY
+        if self.immune_ticks > 0:
+            self.immune_ticks -= 1
+
         # --- Juvenile period: growth ---
         if self.is_child:
             growth_rate = 0.6 / self.mature_age  # Gradually grows
@@ -585,6 +685,14 @@ class Cell:
                 # Adulthood: HP max update
                 self.max_hp = self.genome.size ** 2 * 0.5
                 self.hp = self.max_hp
+
+        # --- Trail recording ---
+        self.trail_tick += 1
+        if self.trail_tick >= TRAIL_INTERVAL:
+            self.trail_tick = 0
+            self.trail.append((self.x, self.y))
+            if len(self.trail) > TRAIL_MAX_LEN:
+                self.trail = self.trail[-TRAIL_MAX_LEN:]
 
         # Memory fading (every 200 ticks)
         if self.age % 200 == 0:
@@ -650,26 +758,27 @@ class Cell:
                 sprint_mult = 2.2 if self.genome.is_predator() else 1.6
             else:
                 sprint_mult = 1.0
-            cilia_angles = self.genome.cilia_positions()
+            cilia_cs = self.genome.cilia_cos_sin()  # Pre-computed (cos, sin) per cilium
             power = self.genome.cilia_power * sprint_mult * self.maturity  # Juvenile = weaker thrust
             spread = self.genome.maneuverability  # 0=torpedo, 1=jellyfish
 
             # Mix of two components:
             # 1) Torpedo force: cilia push in facing direction (traditional)
             # 2) Jellyfish force: cilia push in DESIRED direction (direct strafing)
-            # The spread ratio determines which dominates
 
-            # Torpedo component: each cilium pushes at its own angle (facing direction + offset)
+            # Torpedo component: rotate pre-computed cilia vectors by cell angle
+            cos_a = math.cos(self.angle)
+            sin_a = math.sin(self.angle)
+            pt = power * thrust
             torpedo_fx, torpedo_fy = 0.0, 0.0
-            for ca in cilia_angles:
-                abs_angle = self.angle + ca
-                torpedo_fx += math.cos(abs_angle) * power * thrust
-                torpedo_fy += math.sin(abs_angle) * power * thrust
+            for cc, cs in cilia_cs:
+                # Rotate (cc, cs) by cell angle: cos(a+b) = cos_a*cc - sin_a*cs
+                torpedo_fx += (cos_a * cc - sin_a * cs) * pt
+                torpedo_fy += (sin_a * cc + cos_a * cs) * pt
 
             # Jellyfish component: cilia coordinate in desired direction
-            # More cilia = stronger strafing
             n_cilia = self.genome.num_cilia
-            medusa_force = n_cilia * power * thrust
+            medusa_force = n_cilia * pt
             medusa_fx = math.cos(self.desired_angle) * medusa_force
             medusa_fy = math.sin(self.desired_angle) * medusa_force
 
@@ -746,7 +855,7 @@ class Cell:
                         self.vy *= -0.4
 
         # Cilia animation
-        self.cilia_phase += 0.15 * (0.5 + thrust)
+        self.cilia_phase += 0.15 * (0.5 + self.thrust)
 
     def steer_towards(self, tx, ty, thrust=0.8):
         """Set desired direction and thrust."""
@@ -961,6 +1070,9 @@ class Cell:
         # Recently ate -> at pasture -> lower threshold
         if self.ticks_without_food < 30:
             thresh *= 0.7
+        # Well-fed predators breed easier (Lotka-Volterra: more prey → more predator births)
+        if self.genome.is_predator() and self.kills > 0:
+            thresh *= 0.75  # Successful hunters reproduce at lower threshold
         if self.age < 100 or self.energy < thresh:
             return False
         # Crowding-dependent
@@ -970,10 +1082,11 @@ class Cell:
         return True
 
     def reproduce(self, partner=None, repro_cost=None):
-        # K vs r strategy: predator = 1 strong offspring, herbivore = many fast offspring
+        # K vs r strategy: predator = fewer strong offspring, herbivore = many fast offspring
         if self.genome.is_predator():
-            litter = 1  # Predator always produces 1 strong offspring
-            cost = self.energy * 0.65  # Gives more energy to offspring
+            # Experienced hunters can have twins (like lions/wolves with 2-3 cubs)
+            litter = 2 if self.kills >= 3 else 1
+            cost = self.energy * 0.55  # Lower cost = can reproduce more often
         else:
             litter = max(2, int(self.genome.litter_size))
             cost = self.energy * (repro_cost if repro_cost else REPRODUCTION_COST_RATIO)
@@ -999,6 +1112,32 @@ class Cell:
             else:
                 # Parentless reproduction (asexual): mutation only
                 child_genome = self.genome.mutate()
+
+            # --- Evolutionary diet shift under starvation pressure ---
+            # If parent has been starving, offspring may shift diet "upward":
+            #   Herbivore (lots of competition for plants) → chance to become Omnivore
+            #   Omnivore (competing with both) → chance to become Predator
+            # This is environmental pressure driving adaptation
+            hunger_pressure = self.ticks_without_food
+            if partner:
+                hunger_pressure = max(hunger_pressure, partner.ticks_without_food)
+            if hunger_pressure > 120:
+                # Probability scales with hunger: 120 ticks → 5%, 300+ ticks → 20%
+                shift_chance = min(0.20, 0.05 + (hunger_pressure - 120) * 0.0005)
+                if random.random() < shift_chance:
+                    current_diet = child_genome.genes[5]
+                    if current_diet < 0.3:
+                        # Herbivore → shift toward Omnivore
+                        child_genome.genes[5] = random.uniform(0.35, 0.55)
+                        # Slight attack boost for new omnivore
+                        child_genome.genes[2] = max(child_genome.genes[2], random.uniform(1.0, 2.0))
+                    elif current_diet < 0.7:
+                        # Omnivore → shift toward Predator
+                        child_genome.genes[5] = random.uniform(0.72, 0.88)
+                        # Attack boost for new predator
+                        child_genome.genes[2] = max(child_genome.genes[2], random.uniform(2.5, 4.0))
+                        child_genome.genes[7] = max(child_genome.genes[7], random.uniform(0.4, 0.7))  # aggression
+                    # Predators don't shift further — they're already apex
 
             # Offspring spread in a circle
             angle = (2 * math.pi * i / litter) + random.uniform(-0.3, 0.3)
@@ -1051,6 +1190,21 @@ class Cell:
             if danger:
                 danger.sort(key=lambda s: s[2], reverse=True)
                 child.danger_zones = danger[:5]
+
+            # Watering hole knowledge: inherit from dominant parent
+            water_known = list(dominant.known_water)
+            if recessive and recessive.known_water:
+                for wk in recessive.known_water:
+                    # Don't duplicate close ones
+                    dup = False
+                    for ek in water_known:
+                        if (ek[0] - wk[0]) ** 2 + (ek[1] - wk[1]) ** 2 < 100 ** 2:
+                            dup = True
+                            break
+                    if not dup:
+                        water_known.append(wk)
+            child.known_water = water_known[:5]
+
             children.append(child)
         return children
 
@@ -1101,6 +1255,8 @@ class World:
             "herbivores": 0,
             "omnivores": 0,
         }
+        # Population pressure multipliers (dominant debuff, rare buff)
+        self.dominance_mult = {'herb': 1.0, 'omni': 1.0, 'pred': 1.0}
         # Live settings (modifiable from menu)
         self.settings = {
             'food_energy': FOOD_ENERGY,
@@ -1138,6 +1294,42 @@ class World:
                 'spread': spread,
                 'capacity': int(25 + richness * 30),  # Max food that can grow here
             })
+        # --- Watering holes (placed FAR from food oases — forces migration) ---
+        self.water_sources = []
+        for _ in range(NUM_WATER_SOURCES):
+            for _try in range(50):  # Try to find a spot far from all oases
+                wx = random.uniform(200, self.width - 200)
+                wy = random.uniform(200, self.height - 200)
+                # Check minimum distance from ALL food sources
+                too_close = False
+                for src in self.food_sources:
+                    dx = src['x'] - wx
+                    dy = src['y'] - wy
+                    if math.sqrt(dx * dx + dy * dy) < WATER_MIN_DIST_FROM_FOOD:
+                        too_close = True
+                        break
+                # Also not too close to other water sources
+                for ws in self.water_sources:
+                    dx = ws['x'] - wx
+                    dy = ws['y'] - wy
+                    if math.sqrt(dx * dx + dy * dy) < 300:
+                        too_close = True
+                        break
+                if not too_close:
+                    self.water_sources.append({
+                        'x': wx, 'y': wy,
+                        'radius': WATER_RADIUS + random.uniform(-10, 15),
+                    })
+                    break
+            else:
+                # Fallback: couldn't find ideal spot, place it anyway (relaxed constraint)
+                wx = random.uniform(200, self.width - 200)
+                wy = random.uniform(200, self.height - 200)
+                self.water_sources.append({
+                    'x': wx, 'y': wy,
+                    'radius': WATER_RADIUS + random.uniform(-10, 15),
+                })
+
         # Shelters: half near oases (strategic), half random
         self.shelters = []
         for i in range(NUM_SHELTERS):
@@ -1194,11 +1386,21 @@ class World:
         self.pop_history = []  # [(tick, herb, omni, pred), ...]
         self.pop_history_interval = 30  # Sample every 30 ticks
 
-        # Starting cells
+        # Starting cells — each spawns knowing 1 food source + 1 watering hole
         for _ in range(INITIAL_CELLS):
             x = random.uniform(50, self.width - 50)
             y = random.uniform(50, self.height - 50)
             cell = Cell(x, y, energy=80)
+            # Give initial knowledge: nearest food source
+            if self.food_sources:
+                nearest_food = min(self.food_sources,
+                    key=lambda s: (s['x'] - x) ** 2 + (s['y'] - y) ** 2)
+                cell.food_spots = [(nearest_food['x'], nearest_food['y'], 1.0)]
+            # Give initial knowledge: nearest watering hole
+            if self.water_sources:
+                nearest_water = min(self.water_sources,
+                    key=lambda s: (s['x'] - x) ** 2 + (s['y'] - y) ** 2)
+                cell.known_water = [(nearest_water['x'], nearest_water['y'])]
             self.cells.append(cell)
             self.stats["total_born"] += 1
 
@@ -1303,6 +1505,7 @@ class World:
             'settings': self.settings,
             'stats': self.stats,
             'food_sources': self.food_sources,
+            'water_sources': self.water_sources,
             'shelters': self.shelters,
             'obstacles': self.obstacles,
             'food': [(f[0], f[1], f[2], f[3] if len(f) > 3 else False,
@@ -1335,6 +1538,11 @@ class World:
                 'prefer_weak': c.prefer_weak,
                 'prefer_isolated': c.prefer_isolated,
                 'prefer_slow': c.prefer_slow,
+                'thirst': c.thirst,
+                'known_water': c.known_water,
+                'sick': c.sick,
+                'sick_ticks': c.sick_ticks,
+                'immune_ticks': c.immune_ticks,
             }
             data['cells'].append(cell_data)
         with open(filepath, 'w', encoding='utf-8') as f:
@@ -1352,8 +1560,9 @@ class World:
         self.stats = data.get('stats', self.stats)
         self.pop_history = data.get('pop_history', [])
 
-        # Oases and shelters
+        # Oases, watering holes and shelters
         self.food_sources = data.get('food_sources', self.food_sources)
+        self.water_sources = data.get('water_sources', getattr(self, 'water_sources', []))
         self.shelters = data.get('shelters', self.shelters)
         self.obstacles = data.get('obstacles', self.obstacles)
 
@@ -1391,6 +1600,11 @@ class World:
             cell.hunting_spots = cd.get('hunting_spots', [])
             cell.food_spots = cd.get('food_spots', [])
             cell.danger_zones = cd.get('danger_zones', [])
+            cell.thirst = cd.get('thirst', THIRST_MAX)
+            cell.known_water = cd.get('known_water', [])
+            cell.sick = cd.get('sick', False)
+            cell.sick_ticks = cd.get('sick_ticks', 0)
+            cell.immune_ticks = cd.get('immune_ticks', 0)
             cell.prefer_weak = cd.get('prefer_weak', 0.0)
             cell.prefer_isolated = cd.get('prefer_isolated', 0.0)
             cell.prefer_slow = cd.get('prefer_slow', 0.0)
@@ -1405,6 +1619,114 @@ class World:
             self.food_grid.insert(i, f[0], f[1])
 
         return len(self.cells)
+
+    # --- NumPy vectorized batch operations ---
+
+    def _vectorized_collision(self):
+        """Vectorized cell-cell collision using numpy distance matrix.
+        Replaces per-pair Python loops with batch numpy operations."""
+        alive_cells = [c for c in self.cells if c.alive]
+        n = len(alive_cells)
+        if n < 2:
+            return
+
+        # Extract data to numpy arrays
+        xs = np.array([c.x for c in alive_cells], dtype=np.float64)
+        ys = np.array([c.y for c in alive_cells], dtype=np.float64)
+        radii = np.array([c.radius for c in alive_cells], dtype=np.float64)
+        sizes = np.array([c.current_size for c in alive_cells], dtype=np.float64)
+        is_pred = np.array([c.genome.is_predator() for c in alive_cells], dtype=bool)
+
+        # Pairwise differences via broadcasting (n x n matrices)
+        dx = xs[None, :] - xs[:, None]  # dx[i,j] = xs[j] - xs[i] (other - cell)
+        dy = ys[None, :] - ys[:, None]  # dy[i,j] = ys[j] - ys[i]
+        dist_sq = dx * dx + dy * dy
+
+        # Minimum distances for overlap
+        min_dist = radii[:, None] + radii[None, :]
+        min_dist_sq = min_dist * min_dist
+
+        # Find colliding pairs: upper triangle only, with minimum distance
+        overlap_mask = dist_sq < min_dist_sq
+        overlap_mask &= dist_sq > 0.01
+        # Same type only (both pred or both non-pred)
+        same_type = is_pred[:, None] == is_pred[None, :]
+        overlap_mask &= same_type
+        # Upper triangle (each pair once)
+        overlap_mask = np.triu(overlap_mask, k=1)
+
+        i_idx, j_idx = np.where(overlap_mask)
+        if len(i_idx) == 0:
+            return
+
+        # Compute collision resolution for all pairs
+        pair_dx = dx[i_idx, j_idx]
+        pair_dy = dy[i_idx, j_idx]
+        pair_dist = np.sqrt(dist_sq[i_idx, j_idx])
+        pair_min_dist = min_dist[i_idx, j_idx]
+        overlap = pair_min_dist - pair_dist
+
+        # Normal vectors (pointing from i to j)
+        nx = pair_dx / pair_dist
+        ny = pair_dy / pair_dist
+
+        # Mass-proportional push
+        total_mass = sizes[i_idx] + sizes[j_idx]
+        i_ratio = sizes[j_idx] / total_mass  # Lighter cell moves more
+        j_ratio = sizes[i_idx] / total_mass
+        push = overlap * 0.5
+
+        # Accumulate position and velocity deltas
+        pos_dx = np.zeros(n, dtype=np.float64)
+        pos_dy = np.zeros(n, dtype=np.float64)
+        vel_dx = np.zeros(n, dtype=np.float64)
+        vel_dy = np.zeros(n, dtype=np.float64)
+
+        # Cell i pushed away from j (opposite to normal)
+        np.add.at(pos_dx, i_idx, -nx * push * i_ratio)
+        np.add.at(pos_dy, i_idx, -ny * push * i_ratio)
+        np.add.at(vel_dx, i_idx, -nx * push * i_ratio * 0.3)
+        np.add.at(vel_dy, i_idx, -ny * push * i_ratio * 0.3)
+
+        # Cell j pushed along normal
+        np.add.at(pos_dx, j_idx, nx * push * j_ratio)
+        np.add.at(pos_dy, j_idx, ny * push * j_ratio)
+        np.add.at(vel_dx, j_idx, nx * push * j_ratio * 0.3)
+        np.add.at(vel_dy, j_idx, ny * push * j_ratio * 0.3)
+
+        # Write back to cells
+        for idx in range(n):
+            if pos_dx[idx] != 0.0 or pos_dy[idx] != 0.0:
+                alive_cells[idx].x += pos_dx[idx]
+                alive_cells[idx].y += pos_dy[idx]
+                alive_cells[idx].vx += vel_dx[idx]
+                alive_cells[idx].vy += vel_dy[idx]
+
+    def _vectorized_overcrowding(self):
+        """Vectorized overcrowding penalty using numpy distance matrix."""
+        alive_cells = [c for c in self.cells if c.alive]
+        n = len(alive_cells)
+        if n < 2:
+            return
+
+        xs = np.array([c.x for c in alive_cells], dtype=np.float64)
+        ys = np.array([c.y for c in alive_cells], dtype=np.float64)
+
+        # Distance matrix
+        dx = xs[:, None] - xs[None, :]
+        dy = ys[:, None] - ys[None, :]
+        dist_sq = dx * dx + dy * dy
+
+        r_sq = OVERCROWDING_RADIUS * OVERCROWDING_RADIUS
+        # Count neighbors within radius (excluding self via diagonal)
+        np.fill_diagonal(dist_sq, r_sq + 1)  # Exclude self
+        crowd_counts = np.sum(dist_sq < r_sq, axis=1)
+
+        # Apply penalty only where overcrowded
+        for idx in range(n):
+            if crowd_counts[idx] > OVERCROWDING_THRESHOLD:
+                excess = crowd_counts[idx] - OVERCROWDING_THRESHOLD
+                alive_cells[idx].energy -= excess * OVERCROWDING_PENALTY
 
     def update(self):
         self.tick += 1
@@ -1505,18 +1827,15 @@ class World:
                 cell.mate_search_ticks = 0
             self._cell_ai(cell)
 
-            # --- Overcrowding penalty ---
-            crowding = self.cell_grid.query(cell.x, cell.y, OVERCROWDING_RADIUS)
-            # Exact circle filter (SpatialGrid returns a square)
-            r_sq = OVERCROWDING_RADIUS * OVERCROWDING_RADIUS
-            crowd_count = sum(1 for o in crowding
-                              if o.id != cell.id and
-                              (o.x - cell.x) ** 2 + (o.y - cell.y) ** 2 < r_sq)
-            if crowd_count > OVERCROWDING_THRESHOLD:
-                excess = crowd_count - OVERCROWDING_THRESHOLD
-                cell.energy -= excess * OVERCROWDING_PENALTY
-
-            cell.update(self.width, self.height, self.obstacles, self.settings.get('energy_drain', 1.0))
+            # Population pressure: dominant species pays more energy, rare species pays less
+            if cell.genome.is_predator():
+                dom_mult = self.dominance_mult.get('pred', 1.0)
+            elif cell.genome.is_omnivore():
+                dom_mult = self.dominance_mult.get('omni', 1.0)
+            else:
+                dom_mult = self.dominance_mult.get('herb', 1.0)
+            cell.update(self.width, self.height, self.obstacles,
+                        self.settings.get('energy_drain', 1.0) * dom_mult)
 
             if not cell.alive:
                 # Corpse -> carcass (size-proportional energy) — 5th element: birth tick (freshness)
@@ -1529,30 +1848,53 @@ class World:
             # Everyone eats - but based on type: herbivore=plant, predator=meat
             self._eat_food(cell)
 
+            # Drinking at watering holes
+            self._drink_water(cell)
+
             # Reproduction: mate-seeking required!
             if cell.wants_to_mate():
                 cell.seeking_mate = True
                 # Look for a mate nearby — both must be ready
-                mate_range = cell.radius * 4 + 12  # Mating distance
+                # Predators: larger mate range (pack proximity)
+                mate_range = cell.radius * 6 + 20 if cell.genome.is_predator() else cell.radius * 4 + 12
                 partner = None
                 nearby = self.cell_grid.query(cell.x, cell.y, mate_range)
                 for other in nearby:
                     if other.id == cell.id or not other.alive:
                         continue
+                    if other.is_child or other.mate_cooldown > 0:
+                        continue
                     # Reproductive isolation: only same species can mate
                     same_type = abs(cell.genome.diet - other.genome.diet) < 0.15
-                    if same_type and other.wants_to_mate():
-                        dx = other.x - cell.x
-                        dy = other.y - cell.y
-                        dist = math.sqrt(dx*dx + dy*dy)
-                        if dist < mate_range:
-                            partner = other
-                            break
+                    if not same_type:
+                        continue
+                    dx = other.x - cell.x
+                    dy = other.y - cell.y
+                    dist = math.sqrt(dx*dx + dy*dy)
+                    if dist > mate_range:
+                        continue
+                    if other.wants_to_mate():
+                        partner = other
+                        break
+                    # Energy sharing: if caller is rich, gift energy to partner
+                    # so they can reach reproduction threshold (courtship feeding)
+                    if other.age >= 100 and cell.energy > cell.genome.repro_thresh * 1.8:
+                        other_thresh = other.genome.repro_thresh * 0.7
+                        deficit = other_thresh - other.energy
+                        if 0 < deficit < cell.energy * 0.25:
+                            # Courtship gift: transfer energy
+                            cell.energy -= deficit
+                            other.energy += deficit
+                            if other.wants_to_mate():
+                                partner = other
+                                break
                 if partner:
                     # Both reproduce, partner also gets cooldown
                     children = cell.reproduce(partner, repro_cost=self.settings['repro_cost'])
-                    cell.mate_cooldown = 200  # ~3 seconds cooldown
-                    partner.mate_cooldown = 200
+                    # Predators: shorter cooldown (pack proximity = easier mating)
+                    cooldown = 120 if cell.genome.is_predator() else 200
+                    cell.mate_cooldown = cooldown
+                    partner.mate_cooldown = cooldown
                     cell.seeking_mate = False
                     partner.seeking_mate = False
                     # Partner energy deduction happens in reproduce(), not here!
@@ -1564,6 +1906,44 @@ class World:
                         self.stats["max_generation"] = max(self.stats["max_generation"], child.generation)
             else:
                 cell.seeking_mate = False
+
+            # --- Last-of-species asexual division ---
+            # If this cell's species has very few members (<= 3), allow cell division
+            # without a partner. Survival instinct: split when alone!
+            if cell.genome.is_predator():
+                my_species_count = self.stats.get("predators", 0)
+            elif cell.genome.is_omnivore():
+                my_species_count = self.stats.get("omnivores", 0)
+            else:
+                my_species_count = self.stats.get("herbivores", 0)
+            if my_species_count <= 8 and not cell.is_child and cell.mate_cooldown <= 0:
+                # Lower threshold for asexual reproduction when endangered
+                # More endangered = lower threshold + cheaper cost
+                if my_species_count <= 1:
+                    asex_thresh = cell.genome.repro_thresh * 0.25  # Desperate: any energy will do
+                    asex_cost = self.settings['repro_cost'] * 0.35
+                    asex_cooldown = 30
+                elif my_species_count <= 3:
+                    asex_thresh = cell.genome.repro_thresh * 0.4
+                    asex_cost = self.settings['repro_cost'] * 0.5
+                    asex_cooldown = 50
+                elif my_species_count <= 5:
+                    asex_thresh = cell.genome.repro_thresh * 0.55
+                    asex_cost = self.settings['repro_cost'] * 0.6
+                    asex_cooldown = 70
+                else:
+                    asex_thresh = cell.genome.repro_thresh * 0.7
+                    asex_cost = self.settings['repro_cost'] * 0.7
+                    asex_cooldown = 90
+                if cell.energy > asex_thresh:
+                    children = cell.reproduce(partner=None, repro_cost=asex_cost)
+                    cell.mate_cooldown = asex_cooldown
+                    for child in children:
+                        child.x = np.clip(child.x, 5, self.width - 5)
+                        child.y = np.clip(child.y, 5, self.height - 5)
+                        new_cells.append(child)
+                        self.stats["total_born"] += 1
+                        self.stats["max_generation"] = max(self.stats["max_generation"], child.generation)
 
         # Predator attacks
         for cell in self.cells:
@@ -1593,57 +1973,111 @@ class World:
                 new_cells = new_cells[:max(0, max_pop - len(self.cells))]
         self.cells.extend(new_cells)
 
-        # --- Cell-cell collision (bounding circle) ---
-        # Rebuild spatial grid for collision queries
+        # --- Vectorized overcrowding penalty (numpy batch) ---
+        self._vectorized_overcrowding()
+
+        # --- Vectorized cell-cell collision (numpy batch) ---
+        self._vectorized_collision()
+
+        # Rebuild spatial grid after collision resolution
         self.cell_grid.clear()
         for cell in self.cells:
             if cell.alive:
                 self.cell_grid.insert(cell, cell.x, cell.y)
-        # Push apart overlapping cells
-        for cell in self.cells:
-            if not cell.alive:
-                continue
-            nearby = self.cell_grid.query(cell.x, cell.y, cell.radius * 4)
-            for other in nearby:
-                if other.id <= cell.id or not other.alive:
-                    continue  # Each pair only once (id ordering)
-                # No collision between predator and its prey (would prevent biting)
-                cell_pred = cell.genome.is_predator()
-                other_pred = other.genome.is_predator()
-                if cell_pred != other_pred:
-                    continue  # Predator vs non-predator: no push
-                dx = other.x - cell.x
-                dy = other.y - cell.y
-                dist_sq = dx * dx + dy * dy
-                min_dist = cell.radius + other.radius
-                if dist_sq < min_dist * min_dist and dist_sq > 0.01:
-                    dist = math.sqrt(dist_sq)
-                    overlap = min_dist - dist
-                    # Push force: heavier cells move less
-                    total_mass = cell.current_size + other.current_size
-                    cell_ratio = other.current_size / total_mass  # Lighter cell moves more
-                    other_ratio = cell.current_size / total_mass
-                    nx = dx / dist  # Normal vector
-                    ny = dy / dist
-                    push = overlap * 0.5  # Resolve half per tick (soft collision)
-                    cell.x -= nx * push * cell_ratio
-                    cell.y -= ny * push * cell_ratio
-                    other.x += nx * push * other_ratio
-                    other.y += ny * push * other_ratio
-                    # Dampen velocity along collision normal
-                    cell.vx -= nx * push * cell_ratio * 0.3
-                    cell.vy -= ny * push * cell_ratio * 0.3
-                    other.vx += nx * push * other_ratio * 0.3
-                    other.vy += ny * push * other_ratio * 0.3
 
         # Food cleanup: remove eaten food (energy <= 0) all at once at end of tick
         # This prevents index-shift bugs (phantom food)
         self.food = [f for f in self.food if f[2] > FOOD_MIN_ENERGY]
 
-        # Statistics update
-        self.stats["predators"] = sum(1 for c in self.cells if c.genome.is_predator())
-        self.stats["omnivores"] = sum(1 for c in self.cells if c.genome.is_omnivore())
-        self.stats["herbivores"] = len(self.cells) - self.stats["predators"] - self.stats["omnivores"]
+        # Statistics update (single pass)
+        pred_count = 0
+        omni_count = 0
+        for c in self.cells:
+            d = c.genome.diet
+            if d >= 0.7:
+                pred_count += 1
+            elif d >= 0.3:
+                omni_count += 1
+        self.stats["predators"] = pred_count
+        self.stats["omnivores"] = omni_count
+        herb_count = len(self.cells) - pred_count - omni_count
+        self.stats["herbivores"] = herb_count
+
+        # --- Population pressure: dominant species gets debuffed, rare gets buffed ---
+        # This prevents any single type from permanently dominating
+        total_alive = max(1, len(self.cells))
+        counts = {'herb': herb_count, 'omni': omni_count, 'pred': pred_count}
+        # Target is equal thirds: 33.3% each
+        # Deviation from target → buff/debuff
+        # dominant (>50%) → metabolism costs up to 1.4x (debuff)
+        # rare (<15%) → metabolism costs down to 0.7x (buff)
+        # normal (25-40%) → no effect (1.0x)
+        for species_key, species_count in counts.items():
+            ratio = species_count / total_alive if total_alive > 0 else 0.33
+            if ratio > 0.45:
+                # Dominant species: progressive debuff (metabolism costs more)
+                # ratio 0.45 → 1.0x, ratio 0.90 → 1.5x
+                excess = min(1.0, (ratio - 0.45) / 0.45)
+                mult = 1.0 + excess * 0.5
+            elif species_count <= 8 and species_count > 0:
+                # Critically endangered: strong buff!
+                # 8 → 0.75x, 5 → 0.55x, 3 → 0.40x, 1 → 0.25x
+                mult = max(0.25, 0.75 - (8 - species_count) * 0.07)
+            elif ratio < 0.20:
+                # Rare species: progressive buff
+                # ratio 0.20 → 1.0x, ratio 0.0 → 0.55x
+                deficit = (0.20 - ratio) / 0.20
+                mult = 1.0 - deficit * 0.45
+            else:
+                mult = 1.0  # Normal range — no adjustment
+            self.dominance_mult[species_key] = mult
+
+        # --- Disease system: outbreak + spread ---
+        if self.tick % DISEASE_CHECK_INTERVAL == 0 and total_alive > 10:
+            # Find the most dominant species
+            dominant_species = max(counts, key=counts.get)
+            dominant_count = counts[dominant_species]
+            dominant_ratio = dominant_count / total_alive
+            if dominant_ratio > DISEASE_OUTBREAK_THRESHOLD:
+                if random.random() < DISEASE_OUTBREAK_CHANCE:
+                    # OUTBREAK! Infect 1-3 random members of the dominant species
+                    targets = []
+                    for c in self.cells:
+                        if not c.alive or c.sick or c.immune_ticks > 0:
+                            continue
+                        if dominant_species == 'herb' and not c.genome.is_predator() and not c.genome.is_omnivore():
+                            targets.append(c)
+                        elif dominant_species == 'omni' and c.genome.is_omnivore():
+                            targets.append(c)
+                        elif dominant_species == 'pred' and c.genome.is_predator():
+                            targets.append(c)
+                    if targets:
+                        num_infected = min(len(targets), random.randint(1, 3))
+                        for victim in random.sample(targets, num_infected):
+                            victim.sick = True
+                            victim.sick_ticks = DISEASE_DURATION
+
+        # Disease spread: sick cells infect nearby same-species cells
+        if self.tick % 5 == 2:  # Every 5 ticks (CPU saving)
+            for cell in self.cells:
+                if not cell.alive or not cell.sick:
+                    continue
+                nearby = self.cell_grid.query(cell.x, cell.y, DISEASE_SPREAD_RANGE)
+                for other in nearby:
+                    if other.id == cell.id or not other.alive or other.sick or other.immune_ticks > 0:
+                        continue
+                    # Only spreads within same species type
+                    same_species = False
+                    if cell.genome.is_predator() and other.genome.is_predator():
+                        same_species = True
+                    elif cell.genome.is_omnivore() and other.genome.is_omnivore():
+                        same_species = True
+                    elif not cell.genome.is_predator() and not cell.genome.is_omnivore() and \
+                         not other.genome.is_predator() and not other.genome.is_omnivore():
+                        same_species = True
+                    if same_species and random.random() < DISEASE_SPREAD_CHANCE * 5:  # *5 because checked every 5th tick
+                        other.sick = True
+                        other.sick_ticks = DISEASE_DURATION
 
         # Population history recording (for graph)
         if self.tick % self.pop_history_interval == 0:
@@ -1657,6 +2091,17 @@ class World:
             if len(self.pop_history) > 600:
                 self.pop_history = self.pop_history[-600:]
 
+    def _give_initial_knowledge(self, cell):
+        """Give a new cell knowledge of nearest food source + watering hole."""
+        if self.food_sources and not cell.food_spots:
+            nearest_food = min(self.food_sources,
+                key=lambda s: (s['x'] - cell.x) ** 2 + (s['y'] - cell.y) ** 2)
+            cell.food_spots = [(nearest_food['x'], nearest_food['y'], 1.0)]
+        if self.water_sources and not cell.known_water:
+            nearest_water = min(self.water_sources,
+                key=lambda s: (s['x'] - cell.x) ** 2 + (s['y'] - cell.y) ** 2)
+            cell.known_water = [(nearest_water['x'], nearest_water['y'])]
+
     def spawn_herbivore(self, x, y):
         """Manual herbivore spawn."""
         g = Genome()
@@ -1667,6 +2112,7 @@ class World:
         g.genes[9] = random.uniform(0.3, 0.7)    # social
         g.genes[14] = random.uniform(1.5, 3)     # litter_size: more offspring
         c = Cell(x, y, g, energy=100)
+        self._give_initial_knowledge(c)
         self.cells.append(c)
         self.stats["total_born"] += 1
 
@@ -1679,6 +2125,7 @@ class World:
         g.genes[9] = random.uniform(0.3, 0.7)
         g.genes[6] = random.uniform(30, 55)     # repro_thresh: lower
         c = Cell(x, y, g, energy=160)
+        self._give_initial_knowledge(c)
         self.cells.append(c)
         self.stats["total_born"] += 1
 
@@ -1693,6 +2140,7 @@ class World:
         g.genes[9] = random.uniform(0.2, 0.6)      # social
         g.genes[14] = random.uniform(1, 2.5)       # litter_size
         c = Cell(x, y, g, energy=100)
+        self._give_initial_knowledge(c)
         self.cells.append(c)
         self.stats["total_born"] += 1
 
@@ -1707,6 +2155,7 @@ class World:
 
     def _cell_ai(self, cell):
         """Cell behavior with pack/herd mechanics + leadership system."""
+        cell.ai_state = "Idle"
         # Stunned cell: no decisions, no movement
         if cell.stun_ticks > 0:
             return
@@ -1739,6 +2188,7 @@ class World:
                 nearby_food = self.food_grid.query(cell.x, cell.y, sense * 0.5)
                 if nearby_food:
                     cell.hibernating = False
+            cell.ai_state = "Hibernating"
             return  # No other AI during hibernation
 
         sense = cell.genome.sense_range
@@ -1923,6 +2373,7 @@ class World:
                     if best_mate_dist < cell.genome.sense_range * 0.5:
                         if cell.sprint_energy > 15 and cell.sprint_cooldown <= 0:
                             cell.sprinting = True
+                    cell.ai_state = "Chasing mate"
                     mate_handled = True
             if not mate_handled:
                 gx, gy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.MATE)
@@ -1933,13 +2384,15 @@ class World:
                     if mate_strength > 0.5 and cell.sprint_energy > 20:
                         cell.sprinting = True
                     cell.mate_target_id = None
+                    cell.ai_state = "Mate scent"
                     mate_handled = True
             if not mate_handled:
-                # Can't see mate, can't smell scent -> species AI handles movement (patrol/graze)
-                # Herbivore/omnivore migrates, predator goes to normal patrol
+                # Can't see mate, can't smell scent -> actively search!
                 cell.mate_target_id = None
-                if not cell.genome.is_predator() and not cell.migrating:
-                    cell.start_migration()
+                cell.ai_state = "Seeking mate"
+                if not cell.migrating:
+                    cell.start_migration()  # All species migrate to find mates
+                mate_handled = True  # Don't fall through to species AI (prevents "Digesting" override)
 
         # Species-specific AI — ONLY if mate-seeking didn't take over
         if not mate_handled:
@@ -2033,7 +2486,24 @@ class World:
             if hunger > 150:
                 cell.rest_after_hunt = 0
             if cell.rest_after_hunt > 0:
+                cell.ai_state = "Resting"
                 return
+
+        # === PACK SPLITTING: too many predators together → young ones disperse ===
+        pack_pred_count = sum(1 for a, _ in allies if a.genome.is_predator())
+        if pack_pred_count > 6 and not cell.migrating:
+            is_alpha = cell.leader_id is None and cell.pack_mates > 0
+            if not is_alpha and (cell.age < 800 or cell.kills < 2):
+                if allies:
+                    avg_dx = sum((a.x - cell.x) for a, _ in allies) / len(allies)
+                    avg_dy = sum((a.y - cell.y) for a, _ in allies) / len(allies)
+                    away_angle = math.atan2(-avg_dy, -avg_dx)
+                    dist = 400 + random.uniform(0, 300)
+                    cell.migrate_x = max(50, min(self.width - 50, cell.x + math.cos(away_angle) * dist))
+                    cell.migrate_y = max(50, min(self.height - 50, cell.y + math.sin(away_angle) * dist))
+                    cell.migrating = True
+                    cell.ai_state = "Pack split"
+                    return
 
         # Pack mates' target
         pack_target_id = None
@@ -2087,6 +2557,7 @@ class World:
                 cell.steer_towards(best_meat[0], best_meat[1], thrust)
                 cell.target_id = None
                 cell.sprinting = False
+                cell.ai_state = "Scavenging"
                 return
 
         # === PHASE 2: Well-fed rest (ONLY if no corpse nearby) ===
@@ -2102,6 +2573,7 @@ class World:
                         cell.steer_towards(prey.x, prey.y, 0.7 + aggr * 0.3)
                         if dist < cell.radius * 4 and cell.sprint_energy > 20:
                             cell.sprinting = True
+                        cell.ai_state = "Surplus kill"
                         return
             # Peaceful predator (low aggression): just sleep it off
             cell.thrust = 0.08 + random.random() * 0.05
@@ -2109,6 +2581,7 @@ class World:
             cell.sprinting = False
             if random.random() < 0.06:
                 cell.desired_angle += random.gauss(0, 0.4)
+            cell.ai_state = "Digesting"
             return
 
         # === PHASES 3-5: Prey search, stalking, ambush strike ===
@@ -2211,6 +2684,7 @@ class World:
 
             if not will_attack:
                 cell.wander()
+                cell.ai_state = "Patrolling"
                 return
 
             # === ROI hunting ===
@@ -2227,6 +2701,7 @@ class World:
                     cell.chase_target_id = None
                     cell.rest_after_hunt = 20 + random.randint(0, 20)  # Short rest
                     cell.remember_hunt(best_prey, False, best_prey.x, best_prey.y)
+                    cell.ai_state = "Gave up"
                     return
             else:
                 cell.chase_target_id = best_prey.id
@@ -2239,6 +2714,7 @@ class World:
                 cell.ambush_ticks = 0
                 cell.sprinting = True
                 cell.sprint_energy = max(cell.sprint_energy, 70)
+                cell.ai_state = "Ambush!"
 
             cell.target_id = best_prey.id
 
@@ -2264,6 +2740,7 @@ class World:
                 stalk_thrust *= (1.0 - cell.genome.stealth * 0.35)  # Stealth gene slows down
                 stalk_thrust = min(stalk_thrust, 0.4)
                 cell.steer_towards(target_x, target_y, stalk_thrust)
+                cell.ai_state = "Stalking"
             else:
                 # --- AMBUSH STRIKE: explosive sprint! ---
                 if cell.sprint_energy > 15 and cell.sprint_cooldown <= 0:
@@ -2281,6 +2758,7 @@ class World:
                     target_y = best_prey.y
 
                 cell.steer_towards(target_x, target_y, 1.0)  # FULL THROTTLE
+                cell.ai_state = "Chasing"
 
             # === Pack hunting signal ===
             if cell.genome.social > 0.4:
@@ -2300,6 +2778,7 @@ class World:
                     tx = best_prey.x + (-dy / d) * offset
                     ty = best_prey.y + (dx / d) * offset
                     cell.steer_towards(tx, ty, 0.8)
+                    cell.ai_state = "Pack hunt"
         else:
             # === PHASE 7: No prey — territorial patrol ===
             cell.target_id = None
@@ -2359,7 +2838,12 @@ class World:
                         cell.migrating = False  # Prey scent -> stop to hunt
                     else:
                         cell.steer_towards(cell.migrate_x, cell.migrate_y, 0.45)
+                        cell.ai_state = "Migrating"
                         return
+
+            # --- Thirst check: predators also need water! ---
+            if self._seek_water(cell):
+                return
 
             # --- Ambushing near oasis ---
             if cell.in_shelter and cell.energy > 20:
@@ -2371,6 +2855,7 @@ class World:
                 if cell.ambush_ticks > 600:
                     cell.ambushing = False
                     cell.ambush_ticks = 0
+                cell.ai_state = "Ambushing"
                 return
             elif not cell.in_shelter:
                 cell.ambushing = False
@@ -2390,9 +2875,45 @@ class World:
                         cell.decision_cooldown = 0  # Scent -> switch to hunt mode
                     else:
                         cell.steer_towards(cell.decision_target_x, cell.decision_target_y, 0.3)
+                        cell.ai_state = "Patrolling"
                         return
                 else:
                     cell.decision_cooldown = 0  # Arrived
+
+            # --- Trail tracking: follow prey footprints! ---
+            if hunger > 40:
+                best_trail_cell = None
+                best_trail_dist = sense * 1.5  # Detection range for trail points
+                for other in self.cell_grid.query(cell.x, cell.y, sense * 2):
+                    if other.id == cell.id or not other.alive:
+                        continue
+                    if other.genome.is_predator():
+                        continue  # Only track prey trails
+                    # Check recent trail points (newest half only — old trails are stale)
+                    trail = other.trail
+                    if len(trail) < 3:
+                        continue
+                    # Sample every 3rd point from the newest half for performance
+                    start_idx = len(trail) // 2
+                    for ti in range(start_idx, len(trail), 3):
+                        tx, ty = trail[ti]
+                        dx = tx - cell.x
+                        dy = ty - cell.y
+                        d = math.sqrt(dx * dx + dy * dy)
+                        if d < best_trail_dist:
+                            best_trail_dist = d
+                            # Follow toward the NEWEST point of this cell's trail (direction of travel)
+                            best_trail_cell = other
+                if best_trail_cell and best_trail_cell.trail:
+                    # Follow toward the newest trail point (prey went that way!)
+                    newest = best_trail_cell.trail[-1]
+                    cell.decision_target_x = newest[0]
+                    cell.decision_target_y = newest[1]
+                    cell.decision_cooldown = 30
+                    track_thrust = 0.3 if hunger < 150 else 0.5
+                    cell.steer_towards(newest[0], newest[1], track_thrust)
+                    cell.ai_state = "Tracking"
+                    return
 
             # --- Corpse scent tracking (highest priority during patrol!) ---
             cgx, cgy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.CORPSE_SCENT)
@@ -2406,6 +2927,7 @@ class World:
                 cell.decision_target_y = target_y
                 cell.decision_cooldown = 20
                 cell.steer_towards(target_x, target_y, corpse_thrust)
+                cell.ai_state = "Patrolling"
                 return
 
             # --- Scent tracking (with decision loyalty) ---
@@ -2420,6 +2942,7 @@ class World:
                 cell.decision_target_y = target_y
                 cell.decision_cooldown = 25
                 cell.steer_towards(target_x, target_y, scent_thrust)
+                cell.ai_state = "Patrolling"
                 return
 
             gx2, gy2 = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.TRAIL)
@@ -2430,24 +2953,35 @@ class World:
                 cell.decision_target_y = target_y
                 cell.decision_cooldown = 20
                 cell.steer_towards(target_x, target_y, 0.2)
+                cell.ai_state = "Patrolling"
                 return
 
-            # --- Proactive: toward oasis (herbivores are there) ---
+            # --- Proactive: toward oasis or watering hole (prey gathers there!) ---
             if hunger > 80:
-                best_oasis = None
-                best_oasis_dist = 9999
+                best_target = None
+                best_target_dist = 9999
+                # Check oases
                 for src in self.food_sources:
                     dx = src['x'] - cell.x
                     dy = src['y'] - cell.y
                     d = math.sqrt(dx * dx + dy * dy)
-                    if d < best_oasis_dist and d > 40:
-                        best_oasis = src
-                        best_oasis_dist = d
-                if best_oasis and best_oasis_dist < sense * 5:
-                    cell.decision_target_x = best_oasis['x']
-                    cell.decision_target_y = best_oasis['y']
+                    if d < best_target_dist and d > 40:
+                        best_target = (src['x'], src['y'])
+                        best_target_dist = d
+                # Also check watering holes — prey comes here too!
+                for ws in self.water_sources:
+                    dx = ws['x'] - cell.x
+                    dy = ws['y'] - cell.y
+                    d = math.sqrt(dx * dx + dy * dy)
+                    if d < best_target_dist and d > 40:
+                        best_target = (ws['x'], ws['y'])
+                        best_target_dist = d
+                if best_target and best_target_dist < sense * 5:
+                    cell.decision_target_x = best_target[0]
+                    cell.decision_target_y = best_target[1]
                     cell.decision_cooldown = 40
-                    cell.steer_towards(best_oasis['x'], best_oasis['y'], 0.25)
+                    cell.steer_towards(best_target[0], best_target[1], 0.25)
+                    cell.ai_state = "Patrolling"
                     return
 
             # --- Ambush spot search ---
@@ -2469,6 +3003,7 @@ class World:
                 cell.decision_target_y = best_ambush['y']
                 cell.decision_cooldown = 30
                 cell.steer_towards(best_ambush['x'], best_ambush['y'], 0.2)
+                cell.ai_state = "Patrolling"
                 return
 
             # Known hunting ground
@@ -2481,6 +3016,7 @@ class World:
                     cell.decision_target_y = spot[1]
                     cell.decision_cooldown = 35
                     cell.steer_towards(spot[0], spot[1], 0.3)
+                    cell.ai_state = "Patrolling"
                     return
 
             # Active territorial patrol — ALWAYS goes toward oasis, doesn't stand still!
@@ -2503,6 +3039,7 @@ class World:
                 # No oasis -> random direction change
                 cell.thrust = 0.2
                 cell.desired_angle += random.gauss(0, 0.5)
+            cell.ai_state = "Patrolling"
 
     def _omnivore_ai(self, cell, allies, enemies):
         """Omnivore AI: eats plants and carrion, but doesn't hunt."""
@@ -2515,9 +3052,11 @@ class World:
                     cell.steer_away(other.x, other.y, 1.0)
                     if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
                         cell.sprinting = True
+                    cell.ai_state = "Fleeing!"
                     return
             cell.desired_angle += math.pi
             cell.thrust = 0.9
+            cell.ai_state = "Fleeing!"
             return
 
         # --- Danger detection: flee from predators (stealth system) ---
@@ -2541,6 +3080,7 @@ class World:
             if danger_dist < sense * 0.25 and cell.genome.maneuverability > 0.3:
                 zigzag = (1 if cell.age % 8 < 4 else -1) * cell.genome.maneuverability * 0.4
                 cell.desired_angle += zigzag
+            cell.ai_state = "Fleeing!"
             return
 
         # --- Pheromone sensing: danger scent ---
@@ -2549,10 +3089,11 @@ class World:
             gx, gy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.DANGER)
             if abs(gx) + abs(gy) > 0.2:
                 cell.steer_away(cell.x + gx * 30, cell.y + gy * 30, 0.6)
+                cell.ai_state = "Fleeing!"
                 return
 
         # --- Carrion search: OLD corpse nearby? (fresh corpse belongs to predator!) ---
-        food_sense = sense * 1.4  # Good sense for carrion
+        food_sense = sense  # Omnivore: no food sensing bonus (generalist penalty)
         nearby_food = self.food_grid.query(cell.x, cell.y, food_sense)
         best_meat = None
         best_meat_dist = food_sense
@@ -2586,12 +3127,14 @@ class World:
         if best_meat and best_meat_dist < food_sense:
             thrust = 0.5 if best_meat_dist > eat_dist else 0.15
             cell.steer_towards(best_meat[0], best_meat[1], thrust)
+            cell.ai_state = "Scavenging"
             return
 
         # Plant search
         if best_plant and best_plant_dist < food_sense:
             thrust = 0.4 if best_plant_dist > eat_dist else 0.1
             cell.steer_towards(best_plant[0], best_plant[1], thrust)
+            cell.ai_state = "Grazing"
             return
 
         # --- Corpse scent tracking (old corpses!) ---
@@ -2599,17 +3142,20 @@ class World:
         corpse_smell = abs(cgx) + abs(cgy)
         if corpse_smell > 0.15:
             cell.steer_towards(cell.x + cgx * 40, cell.y + cgy * 40, 0.4)
+            cell.ai_state = "Tracking scent"
             return
 
         # --- Pheromone: food scent ---
         gx, gy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.FOOD_HERE)
         if abs(gx) + abs(gy) > 0.15:
             cell.steer_towards(cell.x + gx * 40, cell.y + gy * 40, 0.35)
+            cell.ai_state = "Tracking scent"
             return
 
         # --- Migration if hungry ---
         if cell.ticks_without_food > 120 and not cell.migrating:
             cell.start_migration()
+            cell.ai_state = "Migrating"
             return
 
         if cell.migrating:
@@ -2624,9 +3170,11 @@ class World:
                 cell.steer_towards(cell.migrate_x, cell.migrate_y, 0.5)
                 if cell.ticks_without_food < 20:
                     cell.migrating = False
+            cell.ai_state = "Migrating"
             return
 
         cell.wander()
+        cell.ai_state = "Wandering"
 
     def _herbivore_ai(self, cell, allies, enemies):
         """Herbivore AI — realistic prey behavior.
@@ -2638,6 +3186,22 @@ class World:
         4. HERD PROTECTION: if large herd -> braver, doesn't flee immediately
         """
         sense = cell.genome.sense_range
+
+        # === HERD SPLITTING: too many herbivores → some disperse ===
+        if len(allies) > 12 and not cell.migrating and not enemies:
+            if cell.age < 600 or cell.current_size < 8:
+                if random.random() < 0.02:
+                    if allies:
+                        avg_dx = sum((a.x - cell.x) for a, _ in allies) / len(allies)
+                        avg_dy = sum((a.y - cell.y) for a, _ in allies) / len(allies)
+                        away_angle = math.atan2(-avg_dy, -avg_dx)
+                        away_angle += random.gauss(0, 0.5)
+                        dist = 300 + random.uniform(0, 400)
+                        cell.migrate_x = max(50, min(self.width - 50, cell.x + math.cos(away_angle) * dist))
+                        cell.migrate_y = max(50, min(self.height - 50, cell.y + math.sin(away_angle) * dist))
+                        cell.migrating = True
+                        cell.ai_state = "Herd split"
+                        return
 
         # === 1. UNDER ACTIVE ATTACK — immediate panic reaction ===
         # If being damaged -> IMMEDIATELY flee, highest priority!
@@ -2665,6 +3229,7 @@ class World:
                             ally.alert_x = attacker.x
                             ally.alert_y = attacker.y
                 cell.remember_danger(attacker.x, attacker.y)
+                cell.ai_state = "Fleeing!"
                 return
             else:
                 # Attacker not visible -> sprint in current momentum direction
@@ -2675,6 +3240,7 @@ class World:
                 cell.thrust = 1.0
                 if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
                     cell.sprinting = True
+                cell.ai_state = "Fleeing!"
                 return
 
         # --- Camouflage: hide in shelter when danger is present ---
@@ -2707,6 +3273,7 @@ class World:
             cell.alert = False
             if cell.sprint_energy > 30 and cell.sprint_cooldown <= 0:
                 cell.sprinting = True  # Warning from allies -> sprint
+            cell.ai_state = "Alert"
             return
 
         if danger and danger_dist < sense * 0.8:
@@ -2720,11 +3287,13 @@ class World:
                 if cell.genome.maneuverability > 0.3:
                     zigzag = (1 if cell.age % 6 < 3 else -1) * cell.genome.maneuverability * 0.6
                     cell.desired_angle += zigzag
+                cell.ai_state = "Panic!"
             elif danger_dist < sense * 0.4:
                 # CLOSE — fast flee, shelter search
                 cell.steer_away(danger.x, danger.y, 0.9)
                 if cell.sprint_energy > 25 and cell.sprint_cooldown <= 0:
                     cell.sprinting = True
+                cell.ai_state = "Fleeing!"
                 # Nearby shelter?
                 for s in self.shelters:
                     dx = s['x'] - cell.x
@@ -2739,10 +3308,12 @@ class World:
                         if angle_diff > 1.5:  # Shelter opposite to predator
                             cell.steer_towards(s['x'], s['y'], 0.85)
                             cell.hiding = True
+                            cell.ai_state = "To shelter!"
                             break
             else:
                 # FARTHER — alert flee, no sprint (saves energy)
                 cell.steer_away(danger.x, danger.y, 0.65)
+                cell.ai_state = "Alert"
 
             cell.remember_danger(danger.x, danger.y)
 
@@ -2759,6 +3330,7 @@ class World:
             if cell.pack_mates >= 4 and cell.genome.social > 0.5:
                 if danger_dist > sense * 0.35:
                     # Enough herd and far enough -> don't flee, keep eating
+                    cell.ai_state = "Herd defense"
                     self._seek_food_or_wander(cell)
                     return
 
@@ -2793,6 +3365,7 @@ class World:
                     else:
                         cell.steer_towards(cell.migrate_x, cell.migrate_y, 0.7)
                         cell.sprinting = dist_to_target > 200 and cell.sprint_energy > 40
+                        cell.ai_state = "Migrating"
                         return
 
             # --- Pasture sharing + danger zone sharing within herd ---
@@ -2812,7 +3385,39 @@ class World:
             if current_danger > 1.5 and not cell.migrating:
                 # This place should be avoided — migrate
                 cell.start_migration()
+                cell.ai_state = "Migrating"
                 return
+
+            # --- Predator trail detection: smell their footprints! ---
+            if cell.genome.sense_range > 80 and not cell.migrating:
+                trail_detect_range = cell.genome.sense_range * 0.6
+                trail_detect_sq = trail_detect_range * trail_detect_range
+                pred_trail_found = False
+                for other in self.cell_grid.query(cell.x, cell.y, cell.genome.sense_range * 1.5):
+                    if other.id == cell.id or not other.alive:
+                        continue
+                    if not other.genome.is_predator():
+                        continue
+                    # Check newest trail points of this predator
+                    trail = other.trail
+                    if len(trail) < 3:
+                        continue
+                    # Only check recent points (last third)
+                    start_idx = 2 * len(trail) // 3
+                    for ti in range(start_idx, len(trail)):
+                        tx, ty = trail[ti]
+                        dx = tx - cell.x
+                        dy = ty - cell.y
+                        if dx * dx + dy * dy < trail_detect_sq:
+                            # Fresh predator trail nearby! Steer away from it
+                            cell.steer_away(tx, ty, 0.5)
+                            cell.ai_state = "Pred trail!"
+                            pred_trail_found = True
+                            break
+                    if pred_trail_found:
+                        break
+                if pred_trail_found:
+                    return
 
             # Well-fed + safe = energy saving mode
             energy_ratio = cell.energy / max(1, cell.genome.repro_thresh)
@@ -2821,12 +3426,88 @@ class World:
 
             self._seek_food_or_wander(cell)
 
+    def _seek_water(self, cell):
+        """If cell is thirsty, steer towards known watering hole. Returns True if seeking water."""
+        if cell.thirst > THIRST_MAX * 0.55:
+            return False  # Not thirsty enough to prioritize water
+        if not self.water_sources:
+            return False
+
+        # First check: am I already at a watering hole edge? If so, stay put
+        for ws in self.water_sources:
+            dx = ws['x'] - cell.x
+            dy = ws['y'] - cell.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if abs(dist - ws['radius']) < 15 + cell.radius:
+                cell.thrust = min(cell.thrust, 0.1)
+                cell.ai_state = "Drinking"
+                return True
+
+        # Find nearest watering hole (from known locations first, then visual range)
+        best_water = None
+        best_dist = float('inf')
+
+        # Check known water spots
+        for wx, wy in cell.known_water:
+            dx = wx - cell.x
+            dy = wy - cell.y
+            d = math.sqrt(dx * dx + dy * dy)
+            if d < best_dist:
+                best_water = (wx, wy)
+                best_dist = d
+
+        # Also check visible watering holes (within sense range)
+        sense = cell.genome.sense_range
+        for ws in self.water_sources:
+            dx = ws['x'] - cell.x
+            dy = ws['y'] - cell.y
+            d = math.sqrt(dx * dx + dy * dy)
+            if d < sense * 2.0 and d < best_dist:
+                best_water = (ws['x'], ws['y'])
+                best_dist = d
+
+        if best_water:
+            # Steer to the EDGE of the watering hole, not the center
+            dx = best_water[0] - cell.x
+            dy = best_water[1] - cell.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            # Find the matching water source radius
+            wr = WATER_RADIUS
+            for ws in self.water_sources:
+                if (ws['x'] - best_water[0]) ** 2 + (ws['y'] - best_water[1]) ** 2 < 100:
+                    wr = ws['radius']
+                    break
+            if dist > wr + 15:
+                # Aim for edge: point on circle closest to cell
+                edge_x = best_water[0] - (dx / max(dist, 1)) * wr
+                edge_y = best_water[1] - (dy / max(dist, 1)) * wr
+                urgency = 0.5 if cell.thirst > THIRST_MAX * 0.2 else 0.85
+                cell.steer_towards(edge_x, edge_y, urgency)
+                # Sprint if critically thirsty
+                if cell.thirst < THIRST_MAX * 0.1 and cell.sprint_energy > 20:
+                    cell.sprinting = True
+            else:
+                # Close to edge, slow approach
+                edge_x = best_water[0] - (dx / max(dist, 1)) * wr
+                edge_y = best_water[1] - (dy / max(dist, 1)) * wr
+                cell.steer_towards(edge_x, edge_y, 0.25)
+            cell.ai_state = "Thirsty"
+            return True
+
+        # No known water: wander (will eventually find one)
+        if cell.thirst < THIRST_MAX * 0.15:
+            cell.ai_state = "Thirsty!"
+        return False
+
     def _seek_food_or_wander(self, cell):
         """Food search or wandering. Predator seeks meat, herbivore seeks plants."""
+        # Thirst takes priority when critically low
+        if self._seek_water(cell):
+            return True
         sense = cell.genome.sense_range
         is_pred = cell.genome.is_predator()
         # Herbivores detect food better (smell bonus)
-        food_sense = sense if is_pred else sense * 1.6
+        food_sense = sense if is_pred else sense * 1.8  # Herbivores: specialist plant detection
         nearby_food = self.food_grid.query(cell.x, cell.y, food_sense)
         best_food = None
         best_dist = food_sense + 1
@@ -2863,6 +3544,7 @@ class World:
             else:
                 food_thrust = 0.45  # Normal: medium tempo
             cell.steer_towards(best_food[0], best_food[1], food_thrust)
+            cell.ai_state = "Grazing"
             return True
         else:
             # No food nearby: search pasture from memory
@@ -2878,6 +3560,7 @@ class World:
                 if dx * dx + dy * dy < 40 * 40:
                     cell.food_spots = [(x, y, a * 0.85) for x, y, a in cell.food_spots]
                     cell.food_spots = [(x, y, a) for x, y, a in cell.food_spots if a > 0.2]
+                cell.ai_state = "Grazing"
                 return True
             # Herbivore: pheromone-based food search before wandering
             if not is_pred:
@@ -2886,12 +3569,15 @@ class World:
                     target_x = cell.x + gx * 40
                     target_y = cell.y + gy * 40
                     cell.steer_towards(target_x, target_y, 0.4)
+                    cell.ai_state = "Food scent"
                     return True
             # Long time without eating + would wander -> migrate instead!
             if cell.ticks_without_food > 150 and not cell.migrating:
                 cell.start_migration()
+                cell.ai_state = "Migrating"
                 return True
             cell.wander()
+            cell.ai_state = "Wandering"
             return False
 
     def _eat_food(self, cell):
@@ -2949,9 +3635,16 @@ class World:
                 bite = min(eat_speed, fe)
                 # Digestion efficiency by type
                 if is_omni:
-                    digest_eff = 0.75  # Omnivore: medium for everything
+                    # Omnivore: worse at both — generalist penalty
+                    digest_eff = 0.65 if is_meat else 0.45
                 elif is_pred:
-                    digest_eff = 0.9   # Predator: specialized for meat
+                    if is_meat and corpse_tick > 0:
+                        # Predator scavenging: old corpse = less nutritious (drives hunting)
+                        corpse_age = self.tick - corpse_tick
+                        freshness = max(0.5, 1.0 - corpse_age / 600.0)  # 0→0.9, 300→0.65, 600+→0.5
+                        digest_eff = 0.9 * freshness
+                    else:
+                        digest_eff = 0.9   # Fresh kill or plant (shouldn't happen)
                 else:
                     digest_eff = 0.9   # Herbivore: specialized for plants
                 cell.energy += bite * digest_eff
@@ -2981,6 +3674,42 @@ class World:
                 else:
                     self.pheromones.deposit(fx, fy, PheromoneMap.FOOD_HERE, 0.3)
                 break  # Eats only 1 food at a time
+
+    def _drink_water(self, cell):
+        """Cell drinks at the edge of a watering hole — refills thirst."""
+        if not self.water_sources:
+            return
+        # Don't drink if full
+        if cell.thirst > THIRST_MAX * 0.9:
+            return
+        for ws in self.water_sources:
+            dx = ws['x'] - cell.x
+            dy = ws['y'] - cell.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            r = ws['radius']
+            # Drink at the EDGE: within a ring of radius ± margin
+            edge_margin = 18 + cell.radius
+            if abs(dist - r) < edge_margin:
+                cell.thirst = min(THIRST_MAX, cell.thirst + THIRST_DRINK_RATE)
+                cell.drinking = True
+                cell.thrust = min(cell.thrust, 0.1)  # Slows down while drinking
+                # Learn this watering hole location
+                already_known = False
+                for kw in cell.known_water:
+                    if (kw[0] - ws['x']) ** 2 + (kw[1] - ws['y']) ** 2 < 100 ** 2:
+                        already_known = True
+                        break
+                if not already_known:
+                    cell.known_water.append((ws['x'], ws['y']))
+                    if len(cell.known_water) > 5:
+                        cell.known_water = cell.known_water[-5:]
+                # Share water knowledge with nearby allies
+                if cell.genome.social > 0.2:
+                    nearby = self.cell_grid.query(cell.x, cell.y, 80)
+                    for other in nearby:
+                        if other.id != cell.id and other.alive and not other.known_water:
+                            other.known_water = [(ws['x'], ws['y'])]
+                return
 
     def _predator_attack(self, predator):
         """Predator damages prey — per-tick combat, not instant kill."""
@@ -3014,6 +3743,17 @@ class World:
                 # --- Damage calculation ---
                 damage = predator.damage_per_tick
 
+                # First bite bonus: ambush/surprise attack deals 3x damage
+                if not prey.being_attacked_by:
+                    damage *= 3.0
+
+                # Pack hunting bonus: coordinated attacks are more effective
+                pack_attackers = sum(1 for c in self.cells
+                                     if c.alive and c.genome.is_predator()
+                                     and c.target_id == prey.id)
+                if pack_attackers >= 2:
+                    damage *= 1.0 + pack_attackers * 0.25  # 2 = 1.5x, 3 = 1.75x, 4 = 2x
+
                 # Herd defense bonus: defense aura from tanks
                 herd_defense = 0
                 nearby_herbs = self.cell_grid.query(prey.x, prey.y, 50)
@@ -3024,9 +3764,10 @@ class World:
                             herd_defense += ally.genome.defense * 0.2
                 herd_defense = min(herd_defense, 4.0)
 
-                # Prey defense reduces damage
+                # Prey defense: percentage reduction (not flat subtraction)
                 defense = prey.genome.defense + herd_defense
-                actual_damage = max(0.05, damage - defense * 0.15)
+                defense_mult = 1.0 / (1.0 + defense * 0.12)  # def 3 = 74%, def 6 = 58%, def 10 = 45%
+                actual_damage = damage * defense_mult
 
                 # Apply damage
                 prey.hp -= actual_damage
@@ -3061,14 +3802,18 @@ class World:
                     predator.rest_after_hunt = 0  # Successful hunt -> DON'T rest, eat!
                     self.stats["total_died"] += 1
 
-                    # Instant energy bonus (blood/fresh meat — like in nature)
-                    instant_bonus = prey.genome.size * 2.0 + 5.0
+                    # Instant energy bonus (blood/organs — calorie-dense fresh meat)
+                    instant_bonus = prey.genome.size * 3.0 + prey.energy * 0.3 + 10.0
                     predator.energy += instant_bonus
                     predator.ticks_without_food = 0
                     predator.last_eat_tick = self.tick
 
+                    # Kill adrenaline: sprint recharge + brief speed boost
+                    predator.sprint_energy = min(100, predator.sprint_energy + 40)
+                    predator.sprint_cooldown = 0
+
                     # Carcass: size-proportional energy — 5th element: birth tick
-                    corpse_energy = prey.energy * 0.5 + prey.genome.size ** 2 * 0.8
+                    corpse_energy = prey.energy * 0.5 + prey.genome.size ** 2 * 1.0
                     corpse_energy = max(10, corpse_energy)
                     self.food.append((prey.x, prey.y, corpse_energy, True, self.tick))
                 break  # Damages 1 prey at a time
@@ -3093,6 +3838,7 @@ class Renderer:
         self.zoom = 1.0
 
         self.show_info = True
+        self.show_trails = True        # Trail visibility (T toggle)
         self.selected_cell = None
         self.top_genome_cells = []  # Clickable top genome cells [(rect, cell), ...]
         self.show_pop_graph = True  # Population graph visibility
@@ -3236,6 +3982,31 @@ class Renderer:
                 pygame.draw.circle(oasis_surf, (40, 110, 35, outline_alpha), (cr, cr), r, max(1, int(self.zoom)))
                 self.screen.blit(oasis_surf, (sx - cr, sy - cr))
 
+        # Watering holes — blue circles, cells drink at the edge
+        for ws in world.water_sources:
+            sx, sy = self.world_to_screen(ws['x'], ws['y'])
+            r = max(5, int(ws['radius'] * self.zoom))
+            if -r - 5 < sx < self.screen_w + r + 5 and -r - 5 < sy < self.screen_h + r + 5:
+                water_surf = pygame.Surface((r * 2 + 8, r * 2 + 8), pygame.SRCALPHA)
+                cr = r + 4
+                # Inner water body — dark blue, semi-transparent
+                pygame.draw.circle(water_surf, (15, 40, 90, 40), (cr, cr), r)
+                # Inner shimmer — lighter blue center
+                inner_r = max(3, r * 2 // 3)
+                pygame.draw.circle(water_surf, (25, 65, 130, 30), (cr, cr), inner_r)
+                # Edge ring — bright blue (this is where cells drink)
+                edge_w = max(2, int(3 * self.zoom))
+                pygame.draw.circle(water_surf, (50, 140, 220, 80), (cr, cr), r, edge_w)
+                # Animated sparkle on edge (subtle)
+                if hasattr(world, 'tick'):
+                    sparkle_angle = (world.tick * 0.02) % (2 * math.pi)
+                    for i in range(4):
+                        a = sparkle_angle + i * math.pi / 2
+                        spx = int(cr + math.cos(a) * r)
+                        spy = int(cr + math.sin(a) * r)
+                        pygame.draw.circle(water_surf, (120, 200, 255, 60), (spx, spy), max(2, int(2 * self.zoom)))
+                self.screen.blit(water_surf, (sx - cr, sy - cr))
+
         # Draw food — size reflects energy
         for food_item in world.food:
             fx, fy, fe = food_item[0], food_item[1], food_item[2]
@@ -3300,6 +4071,67 @@ class Renderer:
                 pygame.draw.line(link_surf, color, (sx1 - ox, sy1 - oy), (sx2 - ox, sy2 - oy), 1)
                 self.screen.blit(link_surf, (ox, oy))
 
+        # Draw cell trails (paths) — lines connecting recent positions
+        # Older trail: fainter but WIDER (scent diffuses over time)
+        # Newer trail: brighter but thinner (fresh, concentrated)
+        # 5 segments for smooth fade + spread gradient
+        if self.show_trails:
+            for cell in world.cells:
+                if not cell.alive or len(cell.trail) < 2:
+                    continue
+                # Determine trail color from cell type
+                if cell.genome.is_predator():
+                    tr, tg, tb = 180, 50, 50     # Red trail
+                elif cell.genome.is_omnivore():
+                    tr, tg, tb = 170, 160, 40    # Yellow trail
+                else:
+                    tr, tg, tb = 40, 140, 50     # Green trail
+
+                # Convert trail + current position to screen coords
+                screen_pts = []
+                any_visible = False
+                for px, py in cell.trail:
+                    sx2, sy2 = self.world_to_screen(px, py)
+                    screen_pts.append((sx2, sy2))
+                    if -80 < sx2 < self.screen_w + 80 and -80 < sy2 < self.screen_h + 80:
+                        any_visible = True
+                # Add current position as last point
+                sx_cur, sy_cur = self.world_to_screen(cell.x, cell.y)
+                screen_pts.append((sx_cur, sy_cur))
+                if -80 < sx_cur < self.screen_w + 80 and -80 < sy_cur < self.screen_h + 80:
+                    any_visible = True
+
+                if not any_visible or len(screen_pts) < 2:
+                    continue
+
+                # Draw in 5 segments: oldest=wide+faint → newest=thin+bright
+                total = len(screen_pts)
+                num_segs = 5
+                seg_size = total // num_segs
+                if seg_size < 2:
+                    # Too few points — draw as single line
+                    pygame.draw.lines(self.screen, (tr, tg, tb), False, screen_pts, max(1, int(self.zoom)))
+                    continue
+
+                for si in range(num_segs):
+                    start = si * seg_size
+                    end = (si + 1) * seg_size + 1 if si < num_segs - 1 else total
+                    if start > 0:
+                        start -= 1  # Overlap by 1 point for continuity
+                    pts = screen_pts[start:end]
+                    if len(pts) < 2:
+                        continue
+                    # t: 0.0 = oldest segment, 1.0 = newest
+                    t = (si + 0.5) / num_segs
+                    # Color: faint → bright
+                    brightness = 0.2 + 0.8 * t
+                    color = (int(tr * brightness), int(tg * brightness), int(tb * brightness))
+                    # Width: old=wide (diffused), new=thin (fresh)
+                    # Oldest: 3.0x zoom, Newest: 0.8x zoom
+                    width_mult = 3.0 - 2.2 * t  # 3.0 → 0.8
+                    w = max(1, int(self.zoom * width_mult))
+                    pygame.draw.lines(self.screen, color, False, pts, w)
+
         # Draw cells
         for cell in world.cells:
             if not cell.alive:
@@ -3334,6 +4166,20 @@ class Renderer:
                 # Hiding indicator (fainter drawing)
                 if cell.hiding and not cell.genome.is_predator():
                     pygame.draw.circle(self.screen, (60, 80, 60), (sx, sy), r + 1, 1)
+
+                # Disease indicator: pulsing green-yellow aura
+                if cell.sick:
+                    pulse = 0.5 + 0.5 * math.sin(world.tick * 0.15 + cell.id)
+                    sick_r = r + max(2, int(4 * self.zoom * pulse))
+                    sick_alpha = int(40 + 40 * pulse)
+                    sick_surf = pygame.Surface((sick_r * 2 + 4, sick_r * 2 + 4), pygame.SRCALPHA)
+                    pygame.draw.circle(sick_surf, (80, 200, 30, sick_alpha),
+                                     (sick_r + 2, sick_r + 2), sick_r)
+                    self.screen.blit(sick_surf, (sx - sick_r - 2, sy - sick_r - 2))
+                # Immunity indicator: faint blue shield
+                elif cell.immune_ticks > 0 and cell.immune_ticks > DISEASE_IMMUNITY * 0.7:
+                    imm_r = r + max(1, int(2 * self.zoom))
+                    pygame.draw.circle(self.screen, (60, 120, 200), (sx, sy), imm_r, max(1, int(self.zoom)))
 
                 # Sense range + pheromone display (for selected cell)
                 if self.selected_cell and self.selected_cell.id == cell.id:
@@ -3522,13 +4368,67 @@ class Renderer:
         food = len(world.food)
         gen = world.stats["max_generation"]
 
-        status = "PAUSED" if paused else f"x{sim_speed}"
-        info = (f"Tick: {world.tick:,}  |  Cells: {alive} "
-                f"(H:{herb} O:{omni} P:{pred})  |  "
-                f"Food: {food}  |  Gen: {gen}  |  {status}")
+        # Trend calculation: compare to ~1000 ticks ago
+        trend_h, trend_o, trend_p = "", "", ""
+        if len(world.pop_history) > 2:
+            # Find sample from ~1000 ticks ago (interval=30, so ~33 samples back)
+            lookback = min(len(world.pop_history) - 1, 1000 // max(1, world.pop_history_interval))
+            old = world.pop_history[-lookback - 1]  # (tick, herb, omni, pred)
+            now_h, now_o, now_p = herb, omni, pred
+            old_h, old_o, old_p = old[1], old[2], old[3]
+            for diff, setter in [(now_h - old_h, 'h'), (now_o - old_o, 'o'), (now_p - old_p, 'p')]:
+                if diff > 2:
+                    sym = "▲"
+                elif diff < -2:
+                    sym = "▼"
+                else:
+                    sym = "─"
+                if setter == 'h':
+                    trend_h = sym
+                elif setter == 'o':
+                    trend_o = sym
+                else:
+                    trend_p = sym
 
-        text = self.font_medium.render(info, True, (200, 220, 200))
-        self.screen.blit(text, (10, 6))
+        status = "PAUSED" if paused else f"x{sim_speed}"
+
+        # Render HUD with colored species + trend arrows
+        x_off = 10
+        parts = [
+            (f"Tick: {world.tick:,}  |  Cells: {alive}  ", (200, 220, 200)),
+        ]
+        # Species with trend colors + dominance indicator
+        species_parts = []
+        dom = world.dominance_mult
+        for label, count, trend, dom_key, color_up, color_down, color_base in [
+            ("H", herb, trend_h, 'herb', (100, 255, 100), (60, 150, 60), (120, 220, 120)),
+            ("O", omni, trend_o, 'omni', (255, 255, 100), (150, 150, 60), (220, 220, 120)),
+            ("P", pred, trend_p, 'pred', (255, 100, 100), (150, 60, 60), (220, 120, 120)),
+        ]:
+            if trend == "▲":
+                tc = color_up
+            elif trend == "▼":
+                tc = color_down
+            else:
+                tc = color_base
+            # Dominance buff/debuff indicator
+            dm = dom.get(dom_key, 1.0)
+            if dm > 1.05:
+                dom_str = "⊖"  # Debuffed (dominant)
+            elif dm < 0.95:
+                dom_str = "⊕"  # Buffed (rare)
+            else:
+                dom_str = ""
+            species_parts.append((f"{label}:{count}{trend}{dom_str} ", tc))
+
+        parts.append(("(", (200, 220, 200)))
+        parts.extend(species_parts)
+        parts.append((f")  |  Food: {food}  |  Gen: {gen}  |  {status}", (200, 220, 200)))
+
+        for text_str, color in parts:
+            text = self.font_medium.render(text_str, True, color)
+            self.screen.blit(text, (x_off, 6))
+            x_off += text.get_width()
 
         # Bottom bar - controls
         bot_y = self.screen_h - 24
@@ -3536,7 +4436,7 @@ class Renderer:
         bot_surf.fill((0, 0, 0, 140))
         self.screen.blit(bot_surf, (0, bot_y))
 
-        controls = "SPACE: Pause | W/S: Speed | C: Action Cam | H: Headless | Ctrl+S/L: Save/Load | 1/2/3: Spawn | F: Food | M: Settings | R: Reset"
+        controls = "SPACE: Pause | W/S: Speed | C: Action Cam | T: Trails | H: Headless | Ctrl+S/L: Save/Load | 1/2/3: Spawn | F: Food | M: Settings | R: Reset"
         ct = self.font_small.render(controls, True, (140, 140, 160))
         self.screen.blit(ct, (10, bot_y + 5))
 
@@ -3552,6 +4452,9 @@ class Renderer:
 
         # Minimap (top left, always visible)
         self._draw_minimap(world)
+
+        # Action cam: tracked cell info panel (left side)
+        self._draw_action_cell_info(world)
 
         # Population graph (bottom center)
         if self.show_pop_graph and len(world.pop_history) > 2:
@@ -4107,6 +5010,98 @@ class Renderer:
                 f"ACTION CAM: {self.action_label}", True, (255, 200, 80))
             self.screen.blit(label_surf, (mx, my + mm_h + 4))
 
+    def _draw_action_cell_info(self, world):
+        """Draw tracked cell stats + AI state during action camera."""
+        if not self.action_cam or not hasattr(self, '_action_cell_id') or not self._action_cell_id:
+            return
+        cell = None
+        for c in world.cells:
+            if c.id == self._action_cell_id and c.alive:
+                cell = c
+                break
+        if not cell:
+            return
+
+        # Panel position: left side
+        px, py = 10, 40
+        pw = 220
+        line_h = 18
+
+        # Determine cell type
+        if cell.genome.is_predator():
+            type_name = "Predator"
+            type_color = (255, 80, 80)
+        elif cell.genome.is_omnivore():
+            type_name = "Omnivore"
+            type_color = (220, 200, 60)
+        else:
+            type_name = "Herbivore"
+            type_color = (80, 220, 80)
+
+        # Stats lines
+        hp_pct = int(cell.hp / max(cell.max_hp, 1) * 100)
+        energy_pct = int(cell.energy / max(cell.genome.repro_thresh, 1) * 100)
+        sprint_pct = int(cell.sprint_energy)
+        lines = [
+            (f"{type_name}  Gen:{cell.generation}", type_color),
+            (f"HP: {cell.hp:.0f}/{cell.max_hp:.0f} ({hp_pct}%)", (200, 200, 200)),
+            (f"Energy: {cell.energy:.0f} ({energy_pct}%)", (200, 200, 200)),
+            (f"Sprint: {sprint_pct}%  Thirst: {int(cell.thirst)}%"
+             + (" 🤢SICK" if cell.sick else (" 🛡️" if cell.immune_ticks > 0 else "")),
+             (80, 200, 30) if cell.sick else (200, 200, 200)),
+            (f"Size: {cell.genome.size:.1f}  Spd: {cell.genome.max_speed:.1f}", (170, 170, 190)),
+            (f"Atk: {cell.genome.attack:.1f}  Def: {cell.genome.defense:.1f}", (170, 170, 190)),
+            (f"Diet: {cell.genome.diet:.2f}  Aggr: {cell.genome.aggression:.2f}", (170, 170, 190)),
+            (f"Kills: {cell.kills}  Children: {cell.children}", (170, 170, 190)),
+            (f"Age: {cell.age}", (140, 140, 160)),
+        ]
+
+        # AI state with icon
+        ai = getattr(cell, 'ai_state', '')
+        if ai:
+            ai_colors = {
+                "Panic!": (255, 60, 60), "Fleeing!": (255, 100, 60),
+                "Starving!": (255, 80, 40), "Ambush!": (255, 50, 50),
+                "Chasing": (255, 160, 60), "Stalking": (200, 150, 255),
+                "Pack hunt": (255, 120, 80), "Surplus kill": (255, 60, 80),
+                "Hibernating": (100, 150, 255), "Digesting": (150, 200, 150),
+                "Grazing": (100, 220, 100), "Scavenging": (200, 180, 100),
+                "Chasing mate": (255, 150, 200), "Mate scent": (255, 170, 210),
+                "Thirsty": (60, 150, 255), "Thirsty!": (40, 100, 255),
+                "Drinking": (80, 180, 255),
+                "Tracking": (200, 130, 60), "Pred trail!": (255, 160, 80),
+            }
+            ai_color = ai_colors.get(ai, (200, 200, 100))
+            lines.append((f"Mind: {ai}", ai_color))
+
+        # Draw panel background
+        ph = len(lines) * line_h + 10
+        panel_surf = pygame.Surface((pw, ph), pygame.SRCALPHA)
+        panel_surf.fill((0, 0, 0, 170))
+        pygame.draw.rect(panel_surf, type_color + (120,), (0, 0, pw, ph), 1)
+        self.screen.blit(panel_surf, (px, py))
+
+        # Draw HP bar
+        bar_y = py + 5 + line_h
+        bar_w = pw - 20
+        hp_ratio = cell.hp / max(cell.max_hp, 1)
+        # Background
+        pygame.draw.rect(self.screen, (60, 20, 20), (px + 10, bar_y + 12, bar_w, 4))
+        # HP fill
+        hp_color = (60, 200, 60) if hp_ratio > 0.5 else ((220, 200, 40) if hp_ratio > 0.25 else (220, 50, 50))
+        pygame.draw.rect(self.screen, hp_color, (px + 10, bar_y + 12, int(bar_w * hp_ratio), 4))
+
+        # Energy bar
+        e_bar_y = bar_y + line_h
+        e_ratio = min(1.0, cell.energy / max(cell.genome.repro_thresh, 1))
+        pygame.draw.rect(self.screen, (20, 20, 60), (px + 10, e_bar_y + 12, bar_w, 4))
+        pygame.draw.rect(self.screen, (60, 140, 220), (px + 10, e_bar_y + 12, int(bar_w * e_ratio), 4))
+
+        # Text
+        for i, (text, color) in enumerate(lines):
+            surf = self.font_small.render(text, True, color)
+            self.screen.blit(surf, (px + 8, py + 5 + i * line_h))
+
     def handle_click(self, pos, world):
         # First: click on top genomes panel?
         mx, my = pos
@@ -4291,6 +5286,7 @@ class PetriDish:
         val = round(val / gdef['step']) * gdef['step']
         val = max(gdef['min'], min(gdef['max'], val))
         self.cell.genome.genes[gdef['idx']] = val
+        self.cell.genome._invalidate_cache()
 
     def _is_inside(self, mx, my):
         """Check if point is inside the panel."""
@@ -4716,6 +5712,10 @@ class Game:
                     self.renderer.selected_cell = None
                 elif event.key == pygame.K_TAB:
                     self.renderer.show_info = not self.renderer.show_info
+                elif event.key == pygame.K_t:
+                    self.renderer.show_trails = not self.renderer.show_trails
+                    self.renderer.flash_message = "Trails ON" if self.renderer.show_trails else "Trails OFF"
+                    self.renderer.flash_timer = 90
                 elif event.key == pygame.K_h:
                     self.headless = not self.headless
                     if self.headless:
