@@ -1106,6 +1106,7 @@ class World:
             'mutation_strength': MUTATION_STRENGTH,
             'max_pop': 400,
             'energy_drain': 1.0,
+            'pred_sense': 1.0,
         }
         self._init()
 
@@ -1739,6 +1740,8 @@ class World:
         # Well-fed prey: reduced awareness (alertness 0.65-1.0)
         if not cell.genome.is_predator():
             sense *= cell.alertness
+        else:
+            sense *= self.settings.get('pred_sense', 1.0)
         nearby_cells = self.cell_grid.query(cell.x, cell.y, sense)
 
         # Starvation counter (no starvation in first 300 ticks, has starting energy)
@@ -2005,7 +2008,7 @@ class World:
         6. REST after hunt: unsuccessful -> stop, recharge sprint
         7. SEARCHING: no prey -> scent/oasis/ambush spot, territorial patrol
         """
-        sense = cell.genome.sense_range
+        sense = cell.genome.sense_range * self.settings.get('pred_sense', 1.0)
         hunger = cell.ticks_without_food
 
         # === Post-unsuccessful-hunt rest (SHORT) ===
@@ -4079,6 +4082,7 @@ class SettingsMenu:
         {"name": "Mutation rate",      "key": "mutation_rate",    "min": 0.02,  "max": 0.5,  "step": 0.02,  "fmt": "{:.0%}"},
         {"name": "Mutation strength",  "key": "mutation_strength", "min": 0.02,  "max": 0.4,  "step": 0.02,  "fmt": "{:.0%}"},
         {"name": "Energy drain",      "key": "energy_drain",      "min": 0.2,   "max": 3.0,  "step": 0.1,   "fmt": "{:.1f}x"},
+        {"name": "Predator sense",   "key": "pred_sense",        "min": 0.3,   "max": 3.0,  "step": 0.1,   "fmt": "{:.1f}x"},
         {"name": "Max population",    "key": "max_pop",           "min": 50,    "max": 1000, "step": 50,    "fmt": "{:.0f}"},
     ]
 
