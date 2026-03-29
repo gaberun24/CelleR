@@ -1,0 +1,32 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:  # Manual trigger
+  push:
+    tags:
+      - 'v*'  # Auto-build on version tags
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install pygame numpy pyinstaller
+
+      - name: Build EXE
+        run: |
+          pyinstaller --onefile --windowed --name CelleR --icon NONE cell_evolution_en.py
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: CelleR-Windows
+          path: dist/CelleR.exe
