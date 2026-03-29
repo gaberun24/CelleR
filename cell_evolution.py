@@ -1763,6 +1763,18 @@ class World:
         """Mindenevő AI: növényt és dögöt is eszik, de nem vadászik."""
         sense = cell.genome.sense_range
 
+        # --- Aktív támadás alatt: azonnali menekülés ---
+        if cell.being_attacked_by:
+            for other, dist in enemies:
+                if other.id in cell.being_attacked_by:
+                    cell.steer_away(other.x, other.y, 1.0)
+                    if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
+                        cell.sprinting = True
+                    return
+            cell.desired_angle += math.pi
+            cell.thrust = 0.9
+            return
+
         # --- Veszélyérzékelés: ragadozóktól menekül ---
         danger = None
         danger_dist = sense + 1
@@ -1772,9 +1784,9 @@ class World:
                     danger = other
                     danger_dist = dist
 
-        if danger and danger_dist < sense * 0.5:
-            cell.steer_away(danger.x, danger.y, 0.85)
-            if danger_dist < sense * 0.3 and cell.sprint_energy > 20 and cell.sprint_cooldown <= 0:
+        if danger and danger_dist < sense * 0.6:
+            cell.steer_away(danger.x, danger.y, 0.9)
+            if danger_dist < sense * 0.3 and cell.sprint_energy > 15 and cell.sprint_cooldown <= 0:
                 cell.sprinting = True
             return
 
@@ -1852,86 +1864,137 @@ class World:
         cell.wander()
 
     def _herbivore_ai(self, cell, allies, enemies):
-        """Növényevő AI csordavédelemmel, migrációval és veszélykerüléssel."""
+        """Növényevő AI — valóságos préda viselkedéssel.
+
+        Menekülési fázisok:
+        1. AKTÍV TÁMADÁS ALATT: éppen sebzik → azonnali pánik menekülés + sprint
+        2. RAGADOZÓ KÖZEL: vizuális érzékelés → cikcakk menekülés vagy freeze
+        3. VESZÉLY SZAG: feromon érzékelés → búvóhely keresés vagy elkerülés
+        4. CSORDA VÉDELEM: ha nagy a csorda → bátrabb, nem menekül azonnal
+        """
         sense = cell.genome.sense_range
+
+        # === 1. AKTÍV TÁMADÁS ALATT — azonnali pánik reakció ===
+        # Ha éppen sebzik → AZONNAL menekülj, ez a legmagasabb prioritás!
+        if cell.being_attacked_by:
+            # Megkeressük a támadót
+            attacker = None
+            for other, dist in enemies:
+                if other.id in cell.being_attacked_by:
+                    attacker = other
+                    break
+            if attacker:
+                # Pánik menekülés + sprint + cikcakk
+                cell.steer_away(attacker.x, attacker.y, 1.0)
+                if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
+                    cell.sprinting = True
+                # Cikcakk: manőveres sejtek oldalra is kilépnek
+                if cell.genome.maneuverability > 0.3:
+                    zigzag = (1 if cell.age % 8 < 4 else -1) * cell.genome.maneuverability * 0.5
+                    cell.desired_angle += zigzag
+                # Veszélyjelzés a csordának!
+                if cell.genome.social > 0.2:
+                    for ally, dist in allies:
+                        if dist < sense * 0.7 and ally.genome.social > 0.15:
+                            ally.alert = True
+                            ally.alert_x = attacker.x
+                            ally.alert_y = attacker.y
+                cell.remember_danger(attacker.x, attacker.y)
+                return
+            else:
+                # Támadó nem látható → menekülj az ellenkező irányba mint ahová nézel
+                cell.desired_angle += math.pi  # 180° fordulás
+                cell.thrust = 1.0
+                if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
+                    cell.sprinting = True
+                return
 
         # --- Álcázás: búvóhelyen rejtőzés ha veszély van ---
         if cell.in_shelter and cell.hiding:
             cell.thrust = 0.05
-            # Ha nincs veszély a közelben, előjön
             if not enemies:
                 danger_smell = self.pheromones.read(cell.x, cell.y, PheromoneMap.DANGER)
                 if danger_smell < 0.3:
                     cell.hiding = False
 
-        # --- Feromon szaglás: veszély szag érzékelés ---
-        danger_smell = self.pheromones.read(cell.x, cell.y, PheromoneMap.DANGER, radius=2)
-        ambush_smell = self.pheromones.read(cell.x, cell.y, PheromoneMap.AMBUSH, radius=2)
-        if danger_smell > 1.5 or ambush_smell > 0.5:
-            # Ragadozó szagot érez — menekülj a szag ellenében!
-            gx, gy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.DANGER)
-            if abs(gx) + abs(gy) > 0.2:
-                cell.steer_away(cell.x + gx * 30, cell.y + gy * 30, 0.7)
-                # Búvóhely keresés ha közelben van
-                for s in self.shelters:
-                    dx = s['x'] - cell.x
-                    dy = s['y'] - cell.y
-                    d = math.sqrt(dx*dx + dy*dy)
-                    if d < sense * 0.5:
-                        cell.steer_towards(s['x'], s['y'], 0.6)
-                        cell.hiding = True
-                        break
-                return
-
-        # --- Veszélyérzékelés ---
+        # === 2. RAGADOZÓ KÖZEL — vizuális érzékelés ===
         danger = None
         danger_dist = sense + 1
 
         for other, dist in enemies:
-            # Lesben álló ragadozót nehezebb észrevenni
             if other.genome.is_predator() and other.genome.attack > cell.genome.defense * 0.3:
                 detect_dist = dist
+                # Lesben álló ragadozót nehezebb észrevenni
                 if other.ambushing or other.hiding:
-                    detect_dist = dist * 0.5  # Fele olyan messzire érzékeli
+                    detect_dist = dist * 0.5
                 if detect_dist < danger_dist:
                     danger = other
                     danger_dist = dist
 
         # Veszélyjelzés társaktól
         if not danger and cell.alert and cell.genome.social > 0.3:
-            cell.steer_away(cell.alert_x, cell.alert_y, 0.6)
+            cell.steer_away(cell.alert_x, cell.alert_y, 0.7)
             cell.alert = False
+            if cell.sprint_energy > 30 and cell.sprint_cooldown <= 0:
+                cell.sprinting = True  # Társaktól kapott figyelmeztetés → sprint
             return
 
-        if danger and danger_dist < sense * 0.6:
-            # MENEKÜLÉS + Sprint!
-            cell.steer_away(danger.x, danger.y, 0.95)
-            if danger_dist < sense * 0.35 and cell.sprint_energy > 20 and cell.sprint_cooldown <= 0:
-                cell.sprinting = True  # Pánik sprint!
+        if danger and danger_dist < sense * 0.8:
+            # Menekülési stratégia a távolság alapján:
+            if danger_dist < sense * 0.2:
+                # NAGYON KÖZEL — pánik sprint + cikcakk
+                cell.steer_away(danger.x, danger.y, 1.0)
+                if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
+                    cell.sprinting = True
+                # Cikcakk manőver
+                if cell.genome.maneuverability > 0.3:
+                    zigzag = (1 if cell.age % 6 < 3 else -1) * cell.genome.maneuverability * 0.6
+                    cell.desired_angle += zigzag
+            elif danger_dist < sense * 0.4:
+                # KÖZEL — gyors menekülés, búvóhely keresés
+                cell.steer_away(danger.x, danger.y, 0.9)
+                if cell.sprint_energy > 25 and cell.sprint_cooldown <= 0:
+                    cell.sprinting = True
+                # Közeli búvóhely felé?
+                for s in self.shelters:
+                    dx = s['x'] - cell.x
+                    dy = s['y'] - cell.y
+                    d = math.sqrt(dx*dx + dy*dy)
+                    # Búvóhely csak ha NEM a ragadozó irányában van
+                    if d < sense * 0.4:
+                        shelter_angle = math.atan2(dy, dx)
+                        danger_angle = math.atan2(danger.y - cell.y, danger.x - cell.x)
+                        angle_diff = abs(math.atan2(math.sin(shelter_angle - danger_angle),
+                                                     math.cos(shelter_angle - danger_angle)))
+                        if angle_diff > 1.5:  # Búvóhely a ragadozóval ellentétes irányban
+                            cell.steer_towards(s['x'], s['y'], 0.85)
+                            cell.hiding = True
+                            break
+            else:
+                # TÁVOLABB — éber menekülés, nem sprint (energiát spórol)
+                cell.steer_away(danger.x, danger.y, 0.65)
 
-            # Veszélyzóna megjegyzése!
             cell.remember_danger(danger.x, danger.y)
 
             # --- Veszélyjelzés a csordának ---
             if cell.genome.social > 0.3:
                 for ally, dist in allies:
-                    if dist < sense * 0.6 and ally.genome.social > 0.2:
+                    if dist < sense * 0.7 and ally.genome.social > 0.15:
                         ally.alert = True
                         ally.alert_x = danger.x
                         ally.alert_y = danger.y
-                        # Veszélyzóna megosztás
                         ally.remember_danger(danger.x, danger.y)
 
-            # --- Csordavédelem: ha elég társunk van, bátrabban viselkedünk ---
-            if cell.pack_mates >= 3 and cell.genome.social > 0.5:
-                if danger_dist > sense * 0.3:
+            # --- Csordavédelem: nagy csorda → bátrabb ---
+            if cell.pack_mates >= 4 and cell.genome.social > 0.5:
+                if danger_dist > sense * 0.35:
+                    # Elég a csorda és elég távol → ne menekülj, egyél tovább
                     self._seek_food_or_wander(cell)
                     return
 
             # --- Migrációs döntés: túl sokat zaklatnak itt? ---
             if cell.should_migrate() and not cell.migrating:
                 cell.start_migration()
-                # Csordatársak is migrálnak!
                 if cell.genome.social > 0.4:
                     for ally, dist in allies:
                         if ally.genome.social > 0.3 and not ally.migrating:
