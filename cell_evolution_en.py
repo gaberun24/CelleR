@@ -1092,6 +1092,7 @@ class World:
             'repro_cost': REPRODUCTION_COST_RATIO,
             'mutation_rate': MUTATION_RATE,
             'mutation_strength': MUTATION_STRENGTH,
+            'max_pop': 400,
         }
         self._init()
 
@@ -1548,10 +1549,25 @@ class World:
 
         # Remove dead, add new
         self.cells = [c for c in self.cells if c.alive]
-        # Population limit - if too many, only fittest newcomers enter
-        max_pop = 400
-        if len(self.cells) + len(new_cells) > max_pop:
-            new_cells = new_cells[:max(0, max_pop - len(self.cells))]
+        # Population limit - most populous species can't reproduce when cap reached
+        max_pop = self.settings.get('max_pop', 400)
+        if max_pop > 0 and len(self.cells) + len(new_cells) > max_pop:
+            # Count species
+            herb_count = sum(1 for c in self.cells if c.genome.diet < 0.3)
+            omni_count = sum(1 for c in self.cells if 0.3 <= c.genome.diet < 0.7)
+            pred_count = sum(1 for c in self.cells if c.genome.diet >= 0.7)
+            biggest = max(herb_count, omni_count, pred_count)
+            # Block offspring from the most populous species
+            if biggest == herb_count:
+                blocked_diet = lambda d: d < 0.3
+            elif biggest == pred_count:
+                blocked_diet = lambda d: d >= 0.7
+            else:
+                blocked_diet = lambda d: 0.3 <= d < 0.7
+            new_cells = [c for c in new_cells if not blocked_diet(c.genome.diet)]
+            # Hard cap: trim remaining if still over
+            if len(self.cells) + len(new_cells) > max_pop:
+                new_cells = new_cells[:max(0, max_pop - len(self.cells))]
         self.cells.extend(new_cells)
 
         # --- Cell-cell collision (bounding circle) ---
@@ -3035,6 +3051,15 @@ class Renderer:
         self.flash_message = ""     # Flash message at screen center
         self.flash_timer = 0        # How many frames it's visible
 
+        # --- Action Camera ---
+        self.action_cam = False     # Action camera mode on/off
+        self.action_target_x = 0.0  # Current focus point
+        self.action_target_y = 0.0
+        self.action_timer = 0       # Ticks remaining on current event
+        self.action_zoom = 1.8      # Zoom level for action cam
+        self.action_label = ""      # What's happening (for HUD)
+        self._action_saved_zoom = 1.0  # Saved zoom before action cam
+
     def world_to_screen(self, wx, wy):
         sx = (wx - self.cam_x) * self.zoom
         sy = (wy - self.cam_y) * self.zoom
@@ -3454,7 +3479,7 @@ class Renderer:
         bot_surf.fill((0, 0, 0, 140))
         self.screen.blit(bot_surf, (0, bot_y))
 
-        controls = "SPACE: Pause | W/S: Speed | H: Headless | Ctrl+S/L: Save/Load | 1/2/3: Spawn | F: Food | M: Settings | R: Reset"
+        controls = "SPACE: Pause | W/S: Speed | C: Action Cam | H: Headless | Ctrl+S/L: Save/Load | 1/2/3: Spawn | F: Food | M: Settings | R: Reset"
         ct = self.font_small.render(controls, True, (140, 140, 160))
         self.screen.blit(ct, (10, bot_y + 5))
 
@@ -3464,6 +3489,10 @@ class Renderer:
 
         # Top genomes panel (bottom right corner)
         self._draw_top_genomes(world)
+
+        # Minimap (bottom left, only in action cam mode)
+        if self.action_cam:
+            self._draw_minimap(world)
 
         # Population graph (bottom center)
         if self.show_pop_graph and len(world.pop_history) > 2:
@@ -3824,6 +3853,168 @@ class Renderer:
                 y += 15
         y += 15
 
+    def update_action_cam(self, world):
+        """Find the most exciting event and smoothly move camera there."""
+        if not self.action_cam:
+            return
+
+        self.action_timer -= 1
+
+        # Still watching current event — smooth camera pan
+        if self.action_timer > 0:
+            target_cam_x = self.action_target_x - self.screen_w / (2 * self.action_zoom)
+            target_cam_y = self.action_target_y - self.screen_h / (2 * self.action_zoom)
+            # Smooth interpolation (lerp)
+            self.cam_x += (target_cam_x - self.cam_x) * 0.06
+            self.cam_y += (target_cam_y - self.cam_y) * 0.06
+            self.zoom += (self.action_zoom - self.zoom) * 0.06
+            return
+
+        # Timer expired — find new event
+        best_score = -1
+        best_x, best_y = self.action_target_x, self.action_target_y
+        best_label = ""
+        best_zoom = 1.8
+
+        for cell in world.cells:
+            if not cell.alive:
+                continue
+            score = 0
+            label = ""
+
+            # Active combat (highest priority)
+            if cell.being_attacked_by:
+                score = 10
+                label = "HUNT"
+                best_zoom = 2.2
+
+            # Predator sprinting at prey
+            elif cell.genome.is_predator() and cell.sprinting and cell.target_id:
+                score = 7
+                label = "CHASE"
+                best_zoom = 1.8
+
+            # Pack hunting (multiple predators on same target)
+            elif cell.genome.is_predator() and cell.target_id:
+                pack = sum(1 for c in world.cells if c.alive and c.genome.is_predator()
+                           and c.target_id == cell.target_id)
+                if pack >= 2:
+                    score = 8
+                    label = f"PACK HUNT x{pack}"
+                    best_zoom = 1.5
+
+            # Flee taunt (panic)
+            elif cell.taunt_type == 'flee':
+                score = 5
+                label = "PANIC"
+                best_zoom = 1.6
+
+            # Attack taunt from alpha
+            elif cell.taunt_type == 'attack':
+                score = 6
+                label = "ALPHA CALL"
+                best_zoom = 1.5
+
+            # Mating
+            elif cell.seeking_mate and cell.taunt_type == 'mate':
+                score = 3
+                label = "MATING CALL"
+                best_zoom = 2.0
+
+            # Hibernation wake-up
+            elif not cell.hibernating and cell.has_hibernated and cell.sprinting and cell.age < 10:
+                score = 4
+                label = "WAKEUP"
+                best_zoom = 2.2
+
+            # Add distance penalty (prefer events far from current view for variety)
+            dx = cell.x - self.action_target_x
+            dy = cell.y - self.action_target_y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > 200:
+                score += 1  # Bonus for variety
+
+            if score > best_score:
+                best_score = score
+                best_x = cell.x
+                best_y = cell.y
+                best_label = label
+                best_zoom_final = best_zoom
+
+        if best_score > 0:
+            self.action_target_x = best_x
+            self.action_target_y = best_y
+            self.action_label = best_label
+            self.action_zoom = best_zoom_final
+            # Stay 5-10 seconds (300-600 ticks at 60fps)
+            self.action_timer = 300 + int(best_score * 30)  # More exciting = longer
+        else:
+            # Nothing exciting — random roam
+            self.action_target_x = random.uniform(200, world.width - 200)
+            self.action_target_y = random.uniform(200, world.height - 200)
+            self.action_label = "ROAMING"
+            self.action_zoom = 1.2
+            self.action_timer = 180  # 3 seconds
+
+    def _draw_minimap(self, world):
+        """Minimap in bottom-left corner showing entire world."""
+        mm_w, mm_h = 180, 180
+        mx, my = 10, self.screen_h - mm_h - 32
+        scale_x = mm_w / world.width
+        scale_y = mm_h / world.height
+
+        # Background
+        mm_surf = pygame.Surface((mm_w, mm_h), pygame.SRCALPHA)
+        mm_surf.fill((0, 0, 0, 180))
+
+        # Food sources (oases) as green dots
+        for src in world.food_sources:
+            ox = int(src['x'] * scale_x)
+            oy = int(src['y'] * scale_y)
+            r = max(2, int(src['spread'] * scale_x * 0.5))
+            pygame.draw.circle(mm_surf, (30, 80, 30, 100), (ox, oy), r)
+
+        # Obstacles as dark rectangles
+        for obs in world.obstacles:
+            ox = int(obs['x'] * scale_x)
+            oy = int(obs['y'] * scale_y)
+            ow = max(2, int(obs['w'] * scale_x))
+            oh = max(2, int(obs['h'] * scale_y))
+            pygame.draw.rect(mm_surf, (50, 45, 40, 160), (ox, oy, ow, oh))
+
+        # Cells as colored dots
+        for cell in world.cells:
+            if not cell.alive:
+                continue
+            cx = int(cell.x * scale_x)
+            cy = int(cell.y * scale_y)
+            if cell.genome.is_predator():
+                col = (220, 60, 60)
+            elif cell.genome.is_omnivore():
+                col = (220, 160, 50)
+            else:
+                col = (60, 200, 60)
+            r = max(1, int(cell.current_size * scale_x * 0.5))
+            pygame.draw.circle(mm_surf, col, (cx, cy), r)
+
+        # Camera viewport rectangle
+        vx = int(self.cam_x * scale_x)
+        vy = int(self.cam_y * scale_y)
+        vw = max(4, int(self.screen_w / self.zoom * scale_x))
+        vh = max(4, int(self.screen_h / self.zoom * scale_y))
+        pygame.draw.rect(mm_surf, (255, 255, 255, 120), (vx, vy, vw, vh), 1)
+
+        # Border
+        pygame.draw.rect(mm_surf, (80, 100, 130), (0, 0, mm_w, mm_h), 1)
+
+        self.screen.blit(mm_surf, (mx, my))
+
+        # Action label
+        if self.action_label:
+            label_surf = self.font_medium.render(
+                f"ACTION CAM: {self.action_label}", True, (255, 200, 80))
+            self.screen.blit(label_surf, (mx, my - 18))
+
     def handle_click(self, pos, world):
         # First: click on top genomes panel?
         mx, my = pos
@@ -3864,6 +4055,7 @@ class SettingsMenu:
         {"name": "Reproduction cost",  "key": "repro_cost",       "min": 0.15,  "max": 0.8,  "step": 0.05,  "fmt": "{:.0%}"},
         {"name": "Mutation rate",      "key": "mutation_rate",    "min": 0.02,  "max": 0.5,  "step": 0.02,  "fmt": "{:.0%}"},
         {"name": "Mutation strength",  "key": "mutation_strength", "min": 0.02,  "max": 0.4,  "step": 0.02,  "fmt": "{:.0%}"},
+        {"name": "Max population",    "key": "max_pop",           "min": 50,    "max": 1000, "step": 50,    "fmt": "{:.0f}"},
     ]
 
     def __init__(self, screen_w, screen_h):
@@ -4077,6 +4269,9 @@ class Game:
                 if not self.paused:
                     for _ in range(self.sim_speed):
                         self.world.update()
+                    # Action camera update (after simulation step)
+                    if self.renderer.action_cam:
+                        self.renderer.update_action_cam(self.world)
                 self.renderer.draw(self.world, self.paused, self.sim_speed)
                 self.settings_menu.draw(self.screen, self.world.settings)
                 pygame.display.flip()
@@ -4163,6 +4358,19 @@ class Game:
                 elif event.key == pygame.K_MINUS or event.key == pygame.K_KP_MINUS:
                     if self.headless:
                         self.headless_render_interval = max(100, self.headless_render_interval - 500)
+                elif event.key == pygame.K_c:
+                    # Toggle action camera
+                    self.renderer.action_cam = not self.renderer.action_cam
+                    if self.renderer.action_cam:
+                        self.renderer._action_saved_zoom = self.renderer.zoom
+                        self.renderer.action_timer = 0  # Find event immediately
+                        self.renderer.flash_message = "Action Camera ON"
+                        self.renderer.flash_timer = 120
+                    else:
+                        self.renderer.zoom = self.renderer._action_saved_zoom
+                        self.renderer.action_label = ""
+                        self.renderer.flash_message = "Action Camera OFF"
+                        self.renderer.flash_timer = 120
                 elif event.key == pygame.K_m:
                     self.settings_menu.toggle()
                     if self.settings_menu.visible:
@@ -4189,7 +4397,14 @@ class Game:
                 elif event.button == 5:  # Scroll down - zoom out
                     self.renderer.zoom = max(0.3, self.renderer.zoom / 1.1)
 
-        # Camera movement with arrows + mouse at edges
+        # Camera movement with arrows + mouse at edges (disabled during action cam)
+        if self.renderer.action_cam:
+            # Camera bounds still apply
+            self.renderer.cam_x = max(0, min(self.world_w - self.screen_w / self.renderer.zoom,
+                                              self.renderer.cam_x))
+            self.renderer.cam_y = max(0, min(self.world_h - self.screen_h / self.renderer.zoom,
+                                              self.renderer.cam_y))
+            return
         keys = pygame.key.get_pressed()
         cam_speed = 12 / self.renderer.zoom
         if keys[pygame.K_LEFT]:

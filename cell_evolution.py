@@ -1092,6 +1092,7 @@ class World:
             'repro_cost': REPRODUCTION_COST_RATIO,
             'mutation_rate': MUTATION_RATE,
             'mutation_strength': MUTATION_STRENGTH,
+            'max_pop': 400,
         }
         self._init()
 
@@ -1548,10 +1549,25 @@ class World:
 
         # Halottak eltávolítása, újak hozzáadása
         self.cells = [c for c in self.cells if c.alive]
-        # Populáció limit - ha túl sokan vannak, csak a legfittebb újak jönnek be
-        max_pop = 400
-        if len(self.cells) + len(new_cells) > max_pop:
-            new_cells = new_cells[:max(0, max_pop - len(self.cells))]
+        # Populáció limit - a legnépesebb faj nem szaporodik ha elérte a plafont
+        max_pop = self.settings.get('max_pop', 400)
+        if max_pop > 0 and len(self.cells) + len(new_cells) > max_pop:
+            # Fajok számlálása
+            herb_count = sum(1 for c in self.cells if c.genome.diet < 0.3)
+            omni_count = sum(1 for c in self.cells if 0.3 <= c.genome.diet < 0.7)
+            pred_count = sum(1 for c in self.cells if c.genome.diet >= 0.7)
+            biggest = max(herb_count, omni_count, pred_count)
+            # A legnépesebb faj utódait blokkoljuk
+            if biggest == herb_count:
+                blocked_diet = lambda d: d < 0.3
+            elif biggest == pred_count:
+                blocked_diet = lambda d: d >= 0.7
+            else:
+                blocked_diet = lambda d: 0.3 <= d < 0.7
+            new_cells = [c for c in new_cells if not blocked_diet(c.genome.diet)]
+            # Hard cap: ha még mindig túl sok, vágjuk le
+            if len(self.cells) + len(new_cells) > max_pop:
+                new_cells = new_cells[:max(0, max_pop - len(self.cells))]
         self.cells.extend(new_cells)
 
         # Táplálék takarítás: megegett kajákat (energia ≤ 0) egyszerre töröljük a tick végén
@@ -3821,6 +3837,7 @@ class SettingsMenu:
         {"name": "Szaporodási költség",  "key": "repro_cost",       "min": 0.15,  "max": 0.8,  "step": 0.05,  "fmt": "{:.0%}"},
         {"name": "Mutáció ráta",         "key": "mutation_rate",    "min": 0.02,  "max": 0.5,  "step": 0.02,  "fmt": "{:.0%}"},
         {"name": "Mutáció erősség",     "key": "mutation_strength", "min": 0.02,  "max": 0.4,  "step": 0.02,  "fmt": "{:.0%}"},
+        {"name": "Max populáció",       "key": "max_pop",           "min": 50,    "max": 1000, "step": 50,    "fmt": "{:.0f}"},
     ]
 
     def __init__(self, screen_w, screen_h):
