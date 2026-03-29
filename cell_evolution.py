@@ -516,12 +516,12 @@ class Cell:
         efficiency = self.genome.metabolism
         return (base + size_cost + cilia_cost + move_cost + attack_cost + sense_cost + stealth_cost) * efficiency
 
-    def update(self, world_w, world_h, obstacles=None):
+    def update(self, world_w, world_h, obstacles=None, energy_drain=1.0):
         if not self.alive:
             return
 
         self.age += 1
-        self.energy -= self.energy_cost_per_tick()
+        self.energy -= self.energy_cost_per_tick() * energy_drain
         if self.mate_cooldown > 0:
             self.mate_cooldown -= 1
         if self.taunt_timer > 0:
@@ -1105,6 +1105,7 @@ class World:
             'mutation_rate': MUTATION_RATE,
             'mutation_strength': MUTATION_STRENGTH,
             'max_pop': 400,
+            'energy_drain': 1.0,
         }
         self._init()
 
@@ -1509,7 +1510,7 @@ class World:
                 excess = crowd_count - OVERCROWDING_THRESHOLD
                 cell.energy -= excess * OVERCROWDING_PENALTY
 
-            cell.update(self.width, self.height, self.obstacles)
+            cell.update(self.width, self.height, self.obstacles, self.settings.get('energy_drain', 1.0))
 
             if not cell.alive:
                 # Holttest → tetem (méret-arányos energia) — 5. elem: születési tick (frissesség)
@@ -3859,6 +3860,7 @@ class SettingsMenu:
         {"name": "Szaporodási költség",  "key": "repro_cost",       "min": 0.15,  "max": 0.8,  "step": 0.05,  "fmt": "{:.0%}"},
         {"name": "Mutáció ráta",         "key": "mutation_rate",    "min": 0.02,  "max": 0.5,  "step": 0.02,  "fmt": "{:.0%}"},
         {"name": "Mutáció erősség",     "key": "mutation_strength", "min": 0.02,  "max": 0.4,  "step": 0.02,  "fmt": "{:.0%}"},
+        {"name": "Energia fogyás",      "key": "energy_drain",      "min": 0.2,   "max": 3.0,  "step": 0.1,   "fmt": "{:.1f}x"},
         {"name": "Max populáció",       "key": "max_pop",           "min": 50,    "max": 1000, "step": 50,    "fmt": "{:.0f}"},
     ]
 
