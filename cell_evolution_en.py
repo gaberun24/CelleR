@@ -3547,9 +3547,8 @@ class Renderer:
         # Petri dish (bottom left)
         self.petri_dish.draw(self.screen)
 
-        # Minimap (bottom left above petri dish, only in action cam mode)
-        if self.action_cam and not self.petri_dish.visible:
-            self._draw_minimap(world)
+        # Minimap (top left, always visible)
+        self._draw_minimap(world)
 
         # Population graph (bottom center)
         if self.show_pop_graph and len(world.pop_history) > 2:
@@ -4046,9 +4045,9 @@ class Renderer:
             self._action_cell_id = None
 
     def _draw_minimap(self, world):
-        """Minimap in bottom-left corner showing entire world."""
+        """Minimap in top-left corner showing entire world."""
         mm_w, mm_h = 180, 180
-        mx, my = 10, self.screen_h - mm_h - 32
+        mx, my = 10, 36
         scale_x = mm_w / world.width
         scale_y = mm_h / world.height
 
@@ -4102,7 +4101,7 @@ class Renderer:
         if self.action_label:
             label_surf = self.font_medium.render(
                 f"ACTION CAM: {self.action_label}", True, (255, 200, 80))
-            self.screen.blit(label_surf, (mx, my - 18))
+            self.screen.blit(label_surf, (mx, my + mm_h + 4))
 
     def handle_click(self, pos, world):
         # First: click on top genomes panel?
@@ -4172,7 +4171,7 @@ class PetriDish:
         self.header_h = self.dish_r * 2 + 30
         self.panel_h = self.header_h + len(self.GENE_DEFS) * self.row_h + 50
         self.panel_x = 8
-        self.panel_y = screen_h - self.panel_h - 8
+        self.panel_y = screen_h - self.panel_h - 30
 
         # Buttons
         self.btn_release = pygame.Rect(self.panel_x + 10, self.panel_y + self.panel_h - 40,
@@ -4201,13 +4200,10 @@ class PetriDish:
     def release_cell(self):
         """Release the cell back into the world with modified genes."""
         if self.cell:
-            # Recalculate derived properties
-            self.cell.genome._update_cache()  if hasattr(self.cell.genome, '_update_cache') else None
             size = self.cell.genome.size
             self.cell.max_hp = size * 2.5 + self.cell.genome.defense * 1.5
             self.cell.hp = min(self.cell.hp, self.cell.max_hp)
-            self.cell.radius = size * 0.6 + 2
-            self.cell.current_size = size
+            self.cell.current_size = size  # radius is derived from this
         self.cell = None
         self.visible = False
 
