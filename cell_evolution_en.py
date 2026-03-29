@@ -3899,6 +3899,14 @@ class Renderer:
 
         self.action_timer -= 1
 
+        # Track the event's current position (follow the action)
+        if self.action_timer > 0 and hasattr(self, '_action_cell_id'):
+            for cell in world.cells:
+                if cell.id == self._action_cell_id and cell.alive:
+                    self.action_target_x += (cell.x - self.action_target_x) * 0.1
+                    self.action_target_y += (cell.y - self.action_target_y) * 0.1
+                    break
+
         # Still watching current event — smooth camera pan
         if self.action_timer > 0:
             target_cam_x = self.action_target_x - self.screen_w / (2 * self.action_zoom)
@@ -3913,7 +3921,8 @@ class Renderer:
         best_score = -1
         best_x, best_y = self.action_target_x, self.action_target_y
         best_label = ""
-        best_zoom = 1.8
+        best_zoom = 1.35
+        best_cell_id = getattr(self, '_action_cell_id', None)
 
         for cell in world.cells:
             if not cell.alive:
@@ -3925,13 +3934,13 @@ class Renderer:
             if cell.being_attacked_by:
                 score = 10
                 label = "HUNT"
-                best_zoom = 2.2
+                best_zoom = 1.65
 
             # Predator sprinting at prey
             elif cell.genome.is_predator() and cell.sprinting and cell.target_id:
                 score = 7
                 label = "CHASE"
-                best_zoom = 1.8
+                best_zoom = 1.35
 
             # Pack hunting (multiple predators on same target)
             elif cell.genome.is_predator() and cell.target_id:
@@ -3940,31 +3949,31 @@ class Renderer:
                 if pack >= 2:
                     score = 8
                     label = f"PACK HUNT x{pack}"
-                    best_zoom = 1.5
+                    best_zoom = 1.15
 
             # Flee taunt (panic)
             elif cell.taunt_type == 'flee':
                 score = 5
                 label = "PANIC"
-                best_zoom = 1.6
+                best_zoom = 1.2
 
             # Attack taunt from alpha
             elif cell.taunt_type == 'attack':
                 score = 6
                 label = "ALPHA CALL"
-                best_zoom = 1.5
+                best_zoom = 1.15
 
             # Mating
             elif cell.seeking_mate and cell.taunt_type == 'mate':
                 score = 3
                 label = "MATING CALL"
-                best_zoom = 2.0
+                best_zoom = 1.5
 
             # Hibernation wake-up
             elif not cell.hibernating and cell.has_hibernated and cell.sprinting and cell.age < 10:
                 score = 4
                 label = "WAKEUP"
-                best_zoom = 2.2
+                best_zoom = 1.65
 
             # Add distance penalty (prefer events far from current view for variety)
             dx = cell.x - self.action_target_x
@@ -3979,12 +3988,14 @@ class Renderer:
                 best_y = cell.y
                 best_label = label
                 best_zoom_final = best_zoom
+                best_cell_id = cell.id
 
         if best_score > 0:
             self.action_target_x = best_x
             self.action_target_y = best_y
             self.action_label = best_label
             self.action_zoom = best_zoom_final
+            self._action_cell_id = best_cell_id
             # Stay 5-10 seconds (300-600 ticks at 60fps)
             self.action_timer = 300 + int(best_score * 30)  # More exciting = longer
         else:
@@ -3992,8 +4003,9 @@ class Renderer:
             self.action_target_x = random.uniform(200, world.width - 200)
             self.action_target_y = random.uniform(200, world.height - 200)
             self.action_label = "ROAMING"
-            self.action_zoom = 1.2
+            self.action_zoom = 0.9
             self.action_timer = 180  # 3 seconds
+            self._action_cell_id = None
 
     def _draw_minimap(self, world):
         """Minimap in bottom-left corner showing entire world."""
