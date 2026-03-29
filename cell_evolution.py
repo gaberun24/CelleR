@@ -470,11 +470,19 @@ class Cell:
         return self.genome.attack * size_mult * 0.3
 
     @property
+    def alertness(self):
+        """Jóllakott préda lassabb és figyelmetlen (1.0=éhes/éber, 0.65=tele/lusta)."""
+        if self.genome.is_predator():
+            return 1.0  # Ragadozók mindig éberek
+        fullness = min(self.energy / max(self.genome.repro_thresh, 1), 1.0)
+        return 1.0 - fullness * 0.35  # 1.0 (éhes) → 0.65 (tele)
+
+    @property
     def effective_speed_mult(self):
-        """Sebesség szorzó: sérülés + méret lassítás."""
+        """Sebesség szorzó: sérülés + méret lassítás + jóllakottsági lustaság."""
         hp_mult = max(0.25, self.hp_ratio)  # Féléletnél fele sebesség
         child_bonus = 1.3 if self.is_child else 1.0  # Kölykök gyorsabbak
-        return hp_mult * child_bonus
+        return hp_mult * child_bonus * self.alertness
 
     def energy_cost_per_tick(self):
         # Hibernáció: minimális anyagcsere (1%)
@@ -1677,6 +1685,9 @@ class World:
             return  # Hibernálás alatt nincs más AI
 
         sense = cell.genome.sense_range
+        # Jóllakott préda: csökkentett figyelem (alertness 0.65-1.0)
+        if not cell.genome.is_predator():
+            sense *= cell.alertness
         nearby_cells = self.cell_grid.query(cell.x, cell.y, sense)
 
         # Éhezés számláló (első 300 tick-ben nincs éhezés, van induló energia)
@@ -3716,7 +3727,7 @@ class Renderer:
             f"--- Csilló rendszer ---",
             f"  {cilia_desc}",
             f"  Erő/csilló: {cell.genome.cilia_power:.2f}",
-            f"  Sebesség: {cell.genome.max_speed:.2f} x{cell.effective_speed_mult:.0%}",
+            f"  Sebesség: {cell.genome.max_speed:.2f} x{cell.effective_speed_mult:.0%}" + (f"  Éberség:{cell.alertness:.0%}" if not cell.genome.is_predator() else ""),
             f"  Fordulás: {math.degrees(cell.genome.turn_rate):.1f}°/tick",
             f"  Manőver: {cell.genome.maneuverability:.0%}",
             "",

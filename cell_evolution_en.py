@@ -470,11 +470,19 @@ class Cell:
         return self.genome.attack * size_mult * 0.3
 
     @property
+    def alertness(self):
+        """Well-fed prey becomes sluggish and less alert (1.0=hungry/alert, 0.65=full/lazy)."""
+        if self.genome.is_predator():
+            return 1.0  # Predators are always sharp
+        fullness = min(self.energy / max(self.genome.repro_thresh, 1), 1.0)
+        return 1.0 - fullness * 0.35  # 1.0 (starving) → 0.65 (stuffed)
+
+    @property
     def effective_speed_mult(self):
-        """Speed multiplier: damage + size slowdown."""
+        """Speed multiplier: damage + size slowdown + well-fed sluggishness."""
         hp_mult = max(0.25, self.hp_ratio)  # Half speed at half health
         child_bonus = 1.3 if self.is_child else 1.0  # Juveniles are faster
-        return hp_mult * child_bonus
+        return hp_mult * child_bonus * self.alertness
 
     def energy_cost_per_tick(self):
         # Hibernation: minimal metabolism (1%)
@@ -1720,6 +1728,9 @@ class World:
             return  # No other AI during hibernation
 
         sense = cell.genome.sense_range
+        # Well-fed prey: reduced awareness (alertness 0.65-1.0)
+        if not cell.genome.is_predator():
+            sense *= cell.alertness
         nearby_cells = self.cell_grid.query(cell.x, cell.y, sense)
 
         # Starvation counter (no starvation in first 300 ticks, has starting energy)
@@ -3772,7 +3783,7 @@ class Renderer:
             f"--- Cilia system ---",
             f"  {cilia_desc}",
             f"  Power/cilium: {cell.genome.cilia_power:.2f}",
-            f"  Speed: {cell.genome.max_speed:.2f} x{cell.effective_speed_mult:.0%}",
+            f"  Speed: {cell.genome.max_speed:.2f} x{cell.effective_speed_mult:.0%}" + (f"  Alert:{cell.alertness:.0%}" if not cell.genome.is_predator() else ""),
             f"  Turn rate: {math.degrees(cell.genome.turn_rate):.1f}\u00b0/tick",
             f"  Maneuver: {cell.genome.maneuverability:.0%}",
             "",
