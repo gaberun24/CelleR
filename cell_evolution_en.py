@@ -1554,6 +1554,49 @@ class World:
             new_cells = new_cells[:max(0, max_pop - len(self.cells))]
         self.cells.extend(new_cells)
 
+        # --- Cell-cell collision (bounding circle) ---
+        # Rebuild spatial grid for collision queries
+        self.cell_grid.clear()
+        for cell in self.cells:
+            if cell.alive:
+                self.cell_grid.insert(cell, cell.x, cell.y)
+        # Push apart overlapping cells
+        for cell in self.cells:
+            if not cell.alive:
+                continue
+            nearby = self.cell_grid.query(cell.x, cell.y, cell.radius * 4)
+            for other in nearby:
+                if other.id <= cell.id or not other.alive:
+                    continue  # Each pair only once (id ordering)
+                # No collision between predator and its prey (would prevent biting)
+                cell_pred = cell.genome.is_predator()
+                other_pred = other.genome.is_predator()
+                if cell_pred != other_pred:
+                    continue  # Predator vs non-predator: no push
+                dx = other.x - cell.x
+                dy = other.y - cell.y
+                dist_sq = dx * dx + dy * dy
+                min_dist = cell.radius + other.radius
+                if dist_sq < min_dist * min_dist and dist_sq > 0.01:
+                    dist = math.sqrt(dist_sq)
+                    overlap = min_dist - dist
+                    # Push force: heavier cells move less
+                    total_mass = cell.current_size + other.current_size
+                    cell_ratio = other.current_size / total_mass  # Lighter cell moves more
+                    other_ratio = cell.current_size / total_mass
+                    nx = dx / dist  # Normal vector
+                    ny = dy / dist
+                    push = overlap * 0.5  # Resolve half per tick (soft collision)
+                    cell.x -= nx * push * cell_ratio
+                    cell.y -= ny * push * cell_ratio
+                    other.x += nx * push * other_ratio
+                    other.y += ny * push * other_ratio
+                    # Dampen velocity along collision normal
+                    cell.vx -= nx * push * cell_ratio * 0.3
+                    cell.vy -= ny * push * cell_ratio * 0.3
+                    other.vx += nx * push * other_ratio * 0.3
+                    other.vy += ny * push * other_ratio * 0.3
+
         # Food cleanup: remove eaten food (energy <= 0) all at once at end of tick
         # This prevents index-shift bugs (phantom food)
         self.food = [f for f in self.food if f[2] > FOOD_MIN_ENERGY]
