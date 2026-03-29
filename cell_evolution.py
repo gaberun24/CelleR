@@ -12,6 +12,7 @@ Vezérlés:
   F           - Táplálék hozzáadás
   1           - Növényevő spawn (5 db a kamera közepén)
   2           - Ragadozó spawn (3 db a kamera közepén)
+  3           - Mindenevő spawn (4 db a kamera közepén)
   M           - Beállítások menü
   R           - Reset
   TAB         - Infó panel be/ki
@@ -194,7 +195,13 @@ class Genome:
         return angles
 
     def is_predator(self):
-        return self.diet > 0.5
+        return self.diet > 0.7
+
+    def is_omnivore(self):
+        return 0.3 < self.diet <= 0.7
+
+    def is_herbivore(self):
+        return self.diet <= 0.3
 
     def color(self):
         sat = 0.7 + 0.3 * self.diet
@@ -363,6 +370,13 @@ class Cell:
         self.seeking_mate = False     # Aktívan keres párt
         self.mate_target_id = None    # Kiszemelt pár id-ja
         self.mate_cooldown = 0        # Szaporodás utáni pihenő
+        # --- ROI vadászat ---
+        self.chase_energy_spent = 0.0  # Üldözésre elégetett energia
+        self.chase_target_id = None    # Kit üldöz jelenleg
+        # --- Hibernáció ---
+        self.hibernating = False       # Spóra/hibernáció állapot
+        self.has_hibernated = False    # Életében egyszer hibernálhat
+        self.hibernate_ticks = 0       # Mennyi ideje hibernál
 
     @property
     def current_size(self):
@@ -393,7 +407,12 @@ class Cell:
         return hp_mult * child_bonus
 
     def energy_cost_per_tick(self):
+        # Hibernáció: minimális anyagcsere (1%)
+        if self.hibernating:
+            return 0.002
         base = 0.018 if not self.genome.is_predator() else 0.04
+        if self.genome.is_omnivore():
+            base = 0.025  # Mindenevő: közepes
         size_cost = self.genome.size * 0.003
         # Csilló fenntartási költség
         cilia_cost = self.genome.num_cilia * self.genome.cilia_power * 0.006
@@ -428,8 +447,26 @@ class Cell:
             self.mate_cooldown -= 1
 
         if self.energy <= MIN_CELL_ENERGY:
-            self.alive = False
-            return
+            # Ragadozók és mindenevők hibernálhatnak halál helyett — DE csak egyszer!
+            if not self.hibernating and not self.has_hibernated and (self.genome.is_predator() or self.genome.is_omnivore()):
+                self.hibernating = True
+                self.has_hibernated = True  # Életében egyszer hibernálhat
+                self.hibernate_ticks = 0
+                self.energy = 0.5
+                self.thrust = 0.0
+                self.sprinting = False
+                self.vx = 0.0
+                self.vy = 0.0
+            else:
+                self.alive = False
+                return
+
+        # Hibernáció időlimit: max ~500 tick, utána meghal
+        if self.hibernating:
+            self.hibernate_ticks += 1
+            if self.hibernate_ticks > 500:
+                self.alive = False
+                return
 
         # --- HP rendszer ---
         if self.hp <= 0:
@@ -846,6 +883,7 @@ class World:
             "max_generation": 0,
             "predators": 0,
             "herbivores": 0,
+            "omnivores": 0,
         }
         # Élő beállítások (menüből módosítható)
         self.settings = {
@@ -986,6 +1024,9 @@ class World:
             if self.tick % 5 == 0:
                 if cell.genome.is_predator():
                     self.pheromones.deposit(cell.x, cell.y, PheromoneMap.DANGER, 0.2)
+                elif cell.genome.is_omnivore():
+                    self.pheromones.deposit(cell.x, cell.y, PheromoneMap.TRAIL, 0.12)
+                    self.pheromones.deposit(cell.x, cell.y, PheromoneMap.PREY_SCENT, 0.15)  # Gyengébb préda szag
                 else:
                     self.pheromones.deposit(cell.x, cell.y, PheromoneMap.TRAIL, 0.15)
                     # Növényevők préda szagot hagynak (ragadozók érzékelik)
@@ -1054,7 +1095,7 @@ class World:
 
         # Ragadozó támadások
         for cell in self.cells:
-            if cell.alive and cell.genome.is_predator():
+            if cell.alive and cell.genome.is_predator() and not cell.hibernating:
                 self._predator_attack(cell)
 
         # Halottak eltávolítása, újak hozzáadása
@@ -1067,7 +1108,8 @@ class World:
 
         # Statisztikák frissítése
         self.stats["predators"] = sum(1 for c in self.cells if c.genome.is_predator())
-        self.stats["herbivores"] = len(self.cells) - self.stats["predators"]
+        self.stats["omnivores"] = sum(1 for c in self.cells if c.genome.is_omnivore())
+        self.stats["herbivores"] = len(self.cells) - self.stats["predators"] - self.stats["omnivores"]
 
         # Auto-spawn KIKAPCSOLVA — manuálisan lehet spawnolni (1/2 gomb)
 
@@ -1087,11 +1129,25 @@ class World:
     def spawn_predator(self, x, y):
         """Manuális ragadozó spawn."""
         g = Genome()
-        g.genes[5] = random.uniform(0.7, 1.0)
+        g.genes[5] = random.uniform(0.75, 1.0)
         g.genes[2] = random.uniform(3, 6)
         g.genes[1] = random.uniform(100, 200)
         g.genes[9] = random.uniform(0.3, 0.7)
         c = Cell(x, y, g, energy=120)
+        self.cells.append(c)
+        self.stats["total_born"] += 1
+
+    def spawn_omnivore(self, x, y):
+        """Manuális mindenevő spawn."""
+        g = Genome()
+        g.genes[5] = random.uniform(0.35, 0.65)   # diet: mindenevő tartomány
+        g.genes[1] = random.uniform(120, 230)      # sense_range
+        g.genes[2] = random.uniform(1, 3)          # attack: alacsony
+        g.genes[3] = random.uniform(2, 5)          # defense: közepes
+        g.genes[6] = random.uniform(40, 80)        # repro_thresh
+        g.genes[9] = random.uniform(0.2, 0.6)      # social
+        g.genes[14] = random.uniform(1, 2.5)       # litter_size
+        c = Cell(x, y, g, energy=100)
         self.cells.append(c)
         self.stats["total_born"] += 1
 
@@ -1106,6 +1162,36 @@ class World:
 
     def _cell_ai(self, cell):
         """Egysejtű viselkedés falka/csorda mechanikával + vezetői rendszer."""
+        # Hibernáló sejt: nem csinál semmit, csak vár prédára
+        if cell.hibernating:
+            cell.thrust = 0.0
+            cell.vx = 0.0
+            cell.vy = 0.0
+            # Felébredés: préda az érzékelési sugarán belül!
+            sense = cell.genome.sense_range
+            nearby_cells = self.cell_grid.query(cell.x, cell.y, sense)
+            for other in nearby_cells:
+                if other.id == cell.id or not other.alive:
+                    continue
+                if other.genome.is_predator():
+                    continue  # Ragadozó nem ébreszti fel
+                dx = other.x - cell.x
+                dy = other.y - cell.y
+                dist = math.sqrt(dx * dx + dy * dy)
+                if dist < sense:
+                    # ÉBREDÉS! Adrenalin-löket — NEM kap extra energiát!
+                    cell.hibernating = False
+                    cell.sprint_energy = 60  # Sprint az utolsó rohamra
+                    cell.sprinting = True
+                    cell.steer_towards(other.x, other.y, 1.0)
+                    break
+            # Mindenevő hibernáló: kaja is felébreszti
+            if cell.hibernating and cell.genome.is_omnivore():
+                nearby_food = self.food_grid.query(cell.x, cell.y, sense * 0.5)
+                if nearby_food:
+                    cell.hibernating = False
+            return  # Hibernálás alatt nincs más AI
+
         sense = cell.genome.sense_range
         nearby_cells = self.cell_grid.query(cell.x, cell.y, sense)
 
@@ -1132,7 +1218,13 @@ class World:
             dist = math.sqrt(dx * dx + dy * dy)
             if dist > sense:
                 continue
+            # Szövetséges meghatározás:
+            # Ragadozók egymás szövetségesei (nem támadják egymást)
+            # Mindenevők a növényevők szövetségesei
             is_same_type = abs(other.genome.diet - cell.genome.diet) < 0.3
+            # Ragadozó + ragadozó = szövetséges (mindig)
+            if cell.genome.is_predator() and other.genome.is_predator():
+                is_same_type = True
             if is_same_type:
                 allies.append((other, dist))
                 cell.pack_mates += 1
@@ -1150,6 +1242,8 @@ class World:
 
         if cell.genome.is_predator():
             self._predator_ai(cell, allies, enemies)
+        elif cell.genome.is_omnivore():
+            self._omnivore_ai(cell, allies, enemies)
         else:
             self._herbivore_ai(cell, allies, enemies)
 
@@ -1230,8 +1324,9 @@ class World:
                 cell.vy += (avg_vy - cell.vy) * sync
 
     def _predator_ai(self, cell, allies, enemies):
-        """Ragadozó AI falkavadászattal."""
+        """Ragadozó AI falkavadászattal + interceptor logika."""
         sense = cell.genome.sense_range
+        hunger = cell.ticks_without_food
 
         # Préda keresés - saját + falkatársak célpontja
         best_prey = None
@@ -1263,17 +1358,13 @@ class World:
                 if d < best_meat_dist:
                     best_meat = (f[0], f[1])
                     best_meat_dist = d
-                    best_meat_energy = f[2]
 
         if best_meat:
-            # Tetem van! Minek vadászni ha ingyen van?
-            # Csak ha nagyon agresszív ÉS a préda közelebb van, vadászik inkább
             eat_meat = True
             if cell.genome.aggression > 0.7 and enemies:
-                # Nagyon agresszív: megnézi van-e könnyű préda közelebb
                 closest_prey_dist = min((d for _, d in enemies), default=sense)
                 if closest_prey_dist < best_meat_dist * 0.5:
-                    eat_meat = False  # Préda közelebb van, vadászik
+                    eat_meat = False
             if eat_meat:
                 thrust = 0.5 if best_meat_dist > 30 else 0.2
                 cell.steer_towards(best_meat[0], best_meat[1], thrust)
@@ -1286,39 +1377,47 @@ class World:
         for other in all_nearby:
             if other.id == cell.id or not other.alive:
                 continue
-            # Ragadozó NEM vadászik ragadozóra
             if other.genome.is_predator():
                 continue
+            if other.hibernating:
+                continue  # Hibernáló nem érdekes célpont
 
             dx = other.x - cell.x
             dy = other.y - cell.y
             dist = max(math.sqrt(dx * dx + dy * dy), 1)
 
-            # --- Mérlegelés: bírok-e vele? ---
             my_damage = cell.damage_per_tick
             prey_hp = other.hp
-            # Hány tick kellene egyedül megölni
             ticks_to_kill = prey_hp / max(0.1, my_damage)
-            # Falka segít: minden társsal gyorsabb
             pack_attackers = 1 + sum(1 for a, _ in allies if a.target_id == other.id)
             ticks_with_pack = ticks_to_kill / pack_attackers
 
-            # Túl nagy préda egyedül? Skip!
             if ticks_to_kill > 30 and pack_attackers < 2:
-                continue  # Nem éri meg egyedül
-            # Gyerekek könnyebb célpont
+                continue
+
+            # --- Sebesség összehasonlítás: bírom-e utolérni? ---
+            my_speed = cell.genome.max_speed * cell.effective_speed_mult
+            prey_speed = other.genome.max_speed * other.effective_speed_mult
+            # Ha a préda gyorsabb és messze van → nem éri meg kergetni
+            if prey_speed > my_speed * 1.1 and dist > sense * 0.3:
+                if not cell.sprinting and cell.sprint_cooldown > 0:
+                    continue  # Gyorsabb + messze + nincs sprint → skip
+
             child_bonus = 0.3 if other.is_child else 0
 
-            # Pontozás: közelibb + gyengébb + kevesebb HP = jobb
+            # Pontozás
             score = (sense - dist) / sense
             score += (cell.genome.attack - other.genome.defense) * 0.1
-            score -= ticks_with_pack * 0.02  # Gyorsabb kill = jobb
+            score -= ticks_with_pack * 0.02
             score += child_bonus
-            score += (1.0 - other.hp_ratio) * 0.5  # Sérültet preferálja!
-            # Ha ez a falka célpontja, bónusz
+            score += (1.0 - other.hp_ratio) * 0.5  # Sérültet preferálja
+
+            # Sebesség-előny bónusz: lassabb préda = jobb célpont
+            speed_advantage = (my_speed - prey_speed) / max(my_speed, 1)
+            score += speed_advantage * 0.4
+
             if pack_target_id and other.id == pack_target_id:
                 score += 0.5 * cell.genome.social
-            # Kisebb préda = könnyebb
             score += (cell.current_size - other.current_size) * 0.02
 
             # Memória-alapú preferenciák
@@ -1330,81 +1429,128 @@ class World:
             if cell.prefer_slow > 0:
                 score += (2.0 - other.genome.max_speed) * cell.prefer_slow * 0.15
 
+            # Éhség bónusz: éhesebb ragadozó kevésbé válogatós
+            if hunger > 200:
+                score += 0.3  # Jobban motivált
+
             if score > best_score:
                 best_prey = other
                 best_score = score
 
         if best_prey and random.random() < cell.genome.aggression:
-            # Lesből támadás! Meglepetés bónusz
+            # --- ROI vadászat: megéri-e még üldözni? ---
+            expected_corpse = best_prey.energy * 0.5 + best_prey.genome.size ** 2 * 0.8
+            roi_limit = expected_corpse * 0.35
+
+            if cell.chase_target_id == best_prey.id:
+                cell.chase_energy_spent += cell.energy_cost_per_tick() * (2.0 if cell.sprinting else 1.0)
+                if cell.chase_energy_spent > roi_limit:
+                    cell.target_id = None
+                    cell.sprinting = False
+                    cell.chase_energy_spent = 0.0
+                    cell.chase_target_id = None
+                    cell.remember_hunt(best_prey, False, best_prey.x, best_prey.y)
+                    cell.wander()
+                    return
+            else:
+                cell.chase_target_id = best_prey.id
+                cell.chase_energy_spent = 0.0
+
+            # Lesből támadás
             if cell.ambushing:
                 cell.ambushing = False
                 cell.hiding = False
                 cell.ambush_ticks = 0
-                cell.sprinting = True  # Azonnali sprint roham!
+                cell.sprinting = True
 
             cell.target_id = best_prey.id
             dx = best_prey.x - cell.x
             dy = best_prey.y - cell.y
             prey_dist = math.sqrt(dx * dx + dy * dy)
 
-            # --- Sprint aktiválás: közel a prédához → roham! ---
+            # --- Interceptor: a préda mozgási irányába előre céloz ---
+            prey_speed = math.sqrt(best_prey.vx ** 2 + best_prey.vy ** 2)
+            if prey_speed > 0.3 and prey_dist > cell.radius * 3:
+                # Becsült elfogási pont: hova fog érni a préda mire odaér
+                my_speed = max(0.5, math.sqrt(cell.vx ** 2 + cell.vy ** 2))
+                intercept_time = prey_dist / max(my_speed + prey_speed, 1)
+                intercept_time = min(intercept_time, 40)  # Max 40 tick előre
+                target_x = best_prey.x + best_prey.vx * intercept_time * 0.7
+                target_y = best_prey.y + best_prey.vy * intercept_time * 0.7
+            else:
+                target_x = best_prey.x
+                target_y = best_prey.y
+
+            # --- Sprint aktiválás ---
             if prey_dist < sense * 0.4 and cell.sprint_energy > 30 and cell.sprint_cooldown <= 0:
                 cell.sprinting = True
             elif prey_dist > sense * 0.6:
-                cell.sprinting = False  # Távol van, energiát spórol
+                cell.sprinting = False
 
-            # Energiatakarékos megközelítés: messziről lassabban, közelről roham
+            # Energiatakarékos megközelítés
             if prey_dist > sense * 0.5:
-                approach_thrust = 0.45  # Távoli: lassú, spórolós közelítés
+                approach_thrust = 0.45
             elif prey_dist > sense * 0.25:
-                approach_thrust = 0.65  # Közepes: fokozódó sebesség
+                approach_thrust = 0.65
             else:
-                approach_thrust = 0.9   # Közel: teljes gáz
-            cell.steer_towards(best_prey.x, best_prey.y, approach_thrust)
+                approach_thrust = 0.9
+            cell.steer_towards(target_x, target_y, approach_thrust)
 
-            # --- Falkavadászat jelzés: célpont megosztás fajtársakkal ---
+            # --- Falkavadászat jelzés ---
             if cell.genome.social > 0.4:
                 for ally, adist in allies:
                     if adist < sense * 0.6 and ally.genome.social > 0.3:
                         if ally.target_id is None or ally.target_id != best_prey.id:
-                            ally.target_id = best_prey.id  # Közös célpont
+                            ally.target_id = best_prey.id
 
             # --- Bekerítés: falkatagok oldalról közelítenek ---
             if cell.genome.social > 0.4 and allies:
                 pack_count = sum(1 for a, d in allies if a.target_id == best_prey.id)
                 if pack_count > 0:
-                    dist = max(prey_dist, 1)
+                    d = max(prey_dist, 1)
                     side = 1 if cell.id % 2 == 0 else -1
                     offset = cell.radius * 4 * side
-                    tx = best_prey.x + (-dy / dist) * offset
-                    ty = best_prey.y + (dx / dist) * offset
+                    tx = target_x + (-dy / d) * offset
+                    ty = target_y + (dx / d) * offset
                     cell.steer_towards(tx, ty, 0.75)
         else:
             cell.target_id = None
             cell.sprinting = False
+            cell.chase_energy_spent = 0.0
+            cell.chase_target_id = None
 
             # --- Éhezés-alapú vándorlás ---
-            # Ha régóta nem evett, egyre kétségbeesettebben keres
-            hunger = cell.ticks_without_food
-            is_starving = hunger > 400  # ~400 tick éhezés után vándorol
+            is_starving = hunger > 300  # Hamarabb vándoroljon (volt 400)
 
             if is_starving and not cell.migrating:
-                # Életösztön: el kell menni innen, itt nincs mit enni
                 cell.migrating = True
-                # Célpont: ismert vadászhely vagy random irány messzire
                 spot = cell.best_hunting_spot()
                 if spot:
-                    # Megy a legjobb vadászhelyre
                     cell.migrate_x = spot[0] + random.gauss(0, 50)
                     cell.migrate_y = spot[1] + random.gauss(0, 50)
                 else:
-                    # Random irány, nagy távolság — felfedezés
-                    angle = random.uniform(0, 2 * math.pi)
-                    cell.migrate_x = cell.x + math.cos(angle) * 500
-                    cell.migrate_y = cell.y + math.sin(angle) * 500
+                    # Oázis keresés: oda menj ahol a kaja van!
+                    best_oasis = None
+                    best_oasis_score = -1
+                    for src in self.food_sources:
+                        dx = src['x'] - cell.x
+                        dy = src['y'] - cell.y
+                        d = math.sqrt(dx * dx + dy * dy)
+                        # Messzebb = rosszabb, de gazdagabb = jobb
+                        oasis_score = src['richness'] * 10 - d * 0.01
+                        if oasis_score > best_oasis_score:
+                            best_oasis = src
+                            best_oasis_score = oasis_score
+                    if best_oasis:
+                        # Oázis közelében lesz préda → odamegy
+                        cell.migrate_x = best_oasis['x'] + random.gauss(0, 80)
+                        cell.migrate_y = best_oasis['y'] + random.gauss(0, 80)
+                    else:
+                        angle = random.uniform(0, 2 * math.pi)
+                        cell.migrate_x = cell.x + math.cos(angle) * 500
+                        cell.migrate_y = cell.y + math.sin(angle) * 500
                 cell.migrate_x = max(50, min(self.width - 50, cell.migrate_x))
                 cell.migrate_y = max(50, min(self.height - 50, cell.migrate_y))
-                # Falkavezető: falkatársak is vándorolnak vele
                 if cell.leader_id is None and cell.genome.social > 0.3:
                     for ally, adist in allies:
                         if ally.leader_id == cell.id and not ally.migrating:
@@ -1413,34 +1559,28 @@ class World:
                             ally.migrate_y = cell.migrate_y + random.gauss(0, 30)
 
             if cell.migrating:
-                # Vándorlás mód
                 dx = cell.migrate_x - cell.x
                 dy = cell.migrate_y - cell.y
                 dist_to_target = math.sqrt(dx * dx + dy * dy)
                 if dist_to_target < 60:
                     cell.migrating = False
-                    # Ha még mindig éhes, próbál új helyet
                     if cell.ticks_without_food > 200:
                         cell.start_migration()
                 else:
-                    # Útközben préda szagot érez? Megáll vadászni
                     prey_smell = self.pheromones.read(cell.x, cell.y, PheromoneMap.PREY_SCENT, radius=2)
                     if prey_smell > 1.0:
-                        cell.migrating = False  # Van préda a közelben!
+                        cell.migrating = False
                     else:
                         cell.steer_towards(cell.migrate_x, cell.migrate_y, 0.6)
-                        if hunger > 400 and cell.sprint_energy > 30:
-                            cell.sprinting = True
                         return
 
             # --- Lesbenállás: búvóhely mellett várakozás ---
             if cell.in_shelter and cell.energy > 30:
                 cell.ambushing = True
                 cell.ambush_ticks += 1
-                cell.thrust = 0.0  # Teljesen mozdulatlan
+                cell.thrust = 0.0
                 cell.hiding = True
                 self.pheromones.deposit(cell.x, cell.y, PheromoneMap.AMBUSH, 0.1)
-                # Max 500 tick lesben, utána megy tovább
                 if cell.ambush_ticks > 500:
                     cell.ambushing = False
                     cell.ambush_ticks = 0
@@ -1450,12 +1590,39 @@ class World:
                 cell.ambush_ticks = 0
                 cell.hiding = False
 
-            # Nincs préda: keress búvóhelyet lesbe, vadászhelyet, vagy kóborolj
-            # Próbálj búvóhelyet keresni legelő közelében (oázis + shelter = csapda!)
+            # --- Aktív keresés: préda szag → oázisok közelében keress ---
+            gx, gy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.PREY_SCENT)
+            scent_strength = abs(gx) + abs(gy)
+            if scent_strength > 0.15:
+                scent_thrust = 0.35 if hunger < 150 else 0.55
+                cell.steer_towards(cell.x + gx * 25, cell.y + gy * 25, scent_thrust)
+                return
+
+            # TRAIL szag: növényevők nyomát követi
+            gx2, gy2 = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.TRAIL)
+            if abs(gx2) + abs(gy2) > 0.2:
+                cell.steer_towards(cell.x + gx2 * 20, cell.y + gy2 * 20, 0.3)
+                return
+
+            # --- Proaktív vadászat: legközelebbi oázis felé sétál (ott van a préda) ---
+            if hunger > 100:
+                best_oasis = None
+                best_oasis_dist = 9999
+                for src in self.food_sources:
+                    dx = src['x'] - cell.x
+                    dy = src['y'] - cell.y
+                    d = math.sqrt(dx * dx + dy * dy)
+                    if d < best_oasis_dist and d > 40:  # Nem az ahol már van
+                        best_oasis = src
+                        best_oasis_dist = d
+                if best_oasis and best_oasis_dist < sense * 4:
+                    cell.steer_towards(best_oasis['x'], best_oasis['y'], 0.35)
+                    return
+
+            # Leshelykeresés
             best_ambush = None
             best_ambush_dist = 9999
             for s in self.shelters:
-                # Van préda szag a közelében? → jó lesállás
                 prey_near = self.pheromones.read(s['x'], s['y'], PheromoneMap.PREY_SCENT)
                 food_near = self.pheromones.read(s['x'], s['y'], PheromoneMap.FOOD_HERE)
                 if prey_near > 0.3 or food_near > 0.5:
@@ -1467,7 +1634,6 @@ class World:
                         best_ambush_dist = d
 
             if best_ambush and best_ambush_dist > 20 and random.random() < 0.4:
-                # Leshelyre energiatakarékosan: lassú, feltűnésmentes közelítés
                 ambush_thrust = 0.3 if best_ambush_dist > 100 else 0.2
                 cell.steer_towards(best_ambush['x'], best_ambush['y'], ambush_thrust)
                 return
@@ -1478,32 +1644,105 @@ class World:
                 dy = spot[1] - cell.y
                 dist_to_spot = math.sqrt(dx * dx + dy * dy)
                 if dist_to_spot > 30:
-                    # Vadászterületre: éhség alapú sebesség
-                    hunger = cell.ticks_without_food
                     hunt_thrust = 0.35 if hunger < 200 else 0.55
                     cell.steer_towards(spot[0], spot[1], hunt_thrust)
                 else:
                     cell.hunting_spots = [(x, y, i * 0.9) for x, y, i in cell.hunting_spots]
                     cell.wander()
-            elif not self._seek_food_or_wander(cell):
-                # --- Ragadozó szaglás: préda szag követése ---
-                # Először a friss préda szagot keresi (erősebb, célzottabb)
-                gx, gy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.PREY_SCENT)
-                scent_strength = abs(gx) + abs(gy)
-                if scent_strength > 0.2:
-                    # Van préda szag! Éhesebb → gyorsabban követi
-                    hunger = cell.ticks_without_food
-                    scent_thrust = 0.35 if hunger < 150 else 0.55
-                    target_x = cell.x + gx * 25
-                    target_y = cell.y + gy * 25
-                    cell.steer_towards(target_x, target_y, scent_thrust)
-                else:
-                    # Nincs préda szag — régi nyomot (TRAIL) követi halványabban
-                    gx2, gy2 = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.TRAIL)
-                    if abs(gx2) + abs(gy2) > 0.3:
-                        cell.steer_towards(cell.x + gx2 * 20, cell.y + gy2 * 20, 0.3)
-                    else:
-                        cell.thrust = 0.15
+            else:
+                cell.wander()
+
+    def _omnivore_ai(self, cell, allies, enemies):
+        """Mindenevő AI: növényt és dögöt is eszik, de nem vadászik."""
+        sense = cell.genome.sense_range
+
+        # --- Veszélyérzékelés: ragadozóktól menekül ---
+        danger = None
+        danger_dist = sense + 1
+        for other, dist in enemies:
+            if other.genome.is_predator() and other.genome.attack > cell.genome.defense * 0.3:
+                if dist < danger_dist:
+                    danger = other
+                    danger_dist = dist
+
+        if danger and danger_dist < sense * 0.5:
+            cell.steer_away(danger.x, danger.y, 0.85)
+            if danger_dist < sense * 0.3 and cell.sprint_energy > 20 and cell.sprint_cooldown <= 0:
+                cell.sprinting = True
+            return
+
+        # --- Feromon szaglás: veszély szag ---
+        danger_smell = self.pheromones.read(cell.x, cell.y, PheromoneMap.DANGER, radius=2)
+        if danger_smell > 1.5:
+            gx, gy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.DANGER)
+            if abs(gx) + abs(gy) > 0.2:
+                cell.steer_away(cell.x + gx * 30, cell.y + gy * 30, 0.6)
+                return
+
+        # --- Dög keresés: tetem a közelben? Prioritás! ---
+        food_sense = sense * 1.4  # Jó szaglás dögre
+        nearby_food = self.food_grid.query(cell.x, cell.y, food_sense)
+        best_meat = None
+        best_meat_dist = food_sense
+        best_plant = None
+        best_plant_dist = food_sense
+
+        for idx in nearby_food:
+            if idx >= len(self.food):
+                continue
+            f = self.food[idx]
+            fx, fy, fe = f[0], f[1], f[2]
+            is_meat = f[3] if len(f) > 3 else False
+            dx = fx - cell.x
+            dy = fy - cell.y
+            d = math.sqrt(dx * dx + dy * dy)
+            if d > food_sense:
+                continue
+            if is_meat and d < best_meat_dist:
+                best_meat = (fx, fy, fe)
+                best_meat_dist = d
+            elif not is_meat and d < best_plant_dist:
+                best_plant = (fx, fy, fe)
+                best_plant_dist = d
+
+        # Dög preferencia: ha van tetem, azt eszi (több energia)
+        if best_meat and best_meat_dist < food_sense:
+            thrust = 0.5 if best_meat_dist > 30 else 0.2
+            cell.steer_towards(best_meat[0], best_meat[1], thrust)
+            return
+
+        # Növény keresés
+        if best_plant and best_plant_dist < food_sense:
+            thrust = 0.4 if best_plant_dist > 40 else 0.15
+            cell.steer_towards(best_plant[0], best_plant[1], thrust)
+            return
+
+        # --- Feromon: kaja szag ---
+        gx, gy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.FOOD_HERE)
+        if abs(gx) + abs(gy) > 0.15:
+            cell.steer_towards(cell.x + gx * 40, cell.y + gy * 40, 0.35)
+            return
+
+        # --- Migráció ha éhes ---
+        if cell.ticks_without_food > 120 and not cell.migrating:
+            cell.start_migration()
+            return
+
+        if cell.migrating:
+            dx = cell.migrate_x - cell.x
+            dy = cell.migrate_y - cell.y
+            dist_to_target = math.sqrt(dx * dx + dy * dy)
+            if dist_to_target < 50:
+                cell.migrating = False
+                if cell.ticks_without_food > 80:
+                    cell.start_migration()
+            else:
+                cell.steer_towards(cell.migrate_x, cell.migrate_y, 0.5)
+                if cell.ticks_without_food < 20:
+                    cell.migrating = False
+            return
+
+        cell.wander()
 
     def _herbivore_ai(self, cell, allies, enemies):
         """Növényevő AI csordavédelemmel, migrációval és veszélykerüléssel."""
@@ -1721,6 +1960,7 @@ class World:
         eat_range_sq = eat_range * eat_range
         nearby_idxs = self.food_grid.query(cell.x, cell.y, eat_range + SPATIAL_GRID_SIZE)
         is_pred = cell.genome.is_predator()
+        is_omni = cell.genome.is_omnivore()
         eaten_set = set()
         ate_something = False
 
@@ -1730,17 +1970,23 @@ class World:
             food_item = self.food[idx]
             fx, fy, fe = food_item[0], food_item[1], food_item[2]
             is_meat = food_item[3] if len(food_item) > 3 else False
+            # Ragadozó: csak hús. Növényevő: csak növény. Mindenevő: mindent!
             if is_pred and not is_meat:
                 continue
-            if not is_pred and is_meat:
+            if not is_pred and not is_omni and is_meat:
                 continue
             dx = fx - cell.x
             dy = fy - cell.y
             if dx * dx + dy * dy < eat_range_sq:
                 # Lassú evés: kiszív eat_speed energiát tick-enként
                 bite = min(self.settings['eat_speed'], fe)
-                # Növényevők hatékonyabban emésztik a növényeket
-                digest_eff = 0.9 if not is_pred else 0.7
+                # Emésztési hatékonyság típus szerint
+                if is_omni:
+                    digest_eff = 0.75  # Mindenevő: közepes mindennél
+                elif is_pred:
+                    digest_eff = 0.7   # Ragadozó: húsra specializált
+                else:
+                    digest_eff = 0.9   # Növényevő: növényre specializált
                 cell.energy += bite * digest_eff
                 new_energy = fe - bite
                 ate_something = True
@@ -1754,6 +2000,7 @@ class World:
 
                 cell.ticks_without_food = 0
                 cell.last_eat_tick = self.tick
+                cell.hibernating = False  # Evés felébreszti
                 # Evés közben megáll
                 cell.thrust = min(cell.thrust, 0.1)
                 if not is_pred:
@@ -1829,6 +2076,8 @@ class World:
                     prey.alive = False
                     predator.remember_hunt(prey, True, prey.x, prey.y)
                     predator.kills += 1
+                    predator.chase_energy_spent = 0.0
+                    predator.chase_target_id = None
                     self.stats["total_died"] += 1
 
                     # Tetem: méret-arányos energia, amit lassan kell enni
@@ -1878,10 +2127,25 @@ class Renderer:
             sx, sy = self.world_to_screen(s['x'], s['y'])
             r = max(5, int(s['radius'] * self.zoom))
             if -r < sx < self.screen_w + r and -r < sy < self.screen_h + r:
-                shelter_surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
-                pygame.draw.circle(shelter_surf, (50, 40, 30, 50), (r, r), r)
-                pygame.draw.circle(shelter_surf, (70, 55, 35, 30), (r, r), r, max(1, int(2 * self.zoom)))
-                self.screen.blit(shelter_surf, (sx - r, sy - r))
+                shelter_surf = pygame.Surface((r * 2 + 8, r * 2 + 8), pygame.SRCALPHA)
+                cr = r + 4
+                # Belső sötét terület
+                pygame.draw.circle(shelter_surf, (40, 35, 25, 70), (cr, cr), r)
+                # Külső szaggatott körvonal
+                pygame.draw.circle(shelter_surf, (100, 80, 50, 90), (cr, cr), r, max(1, int(2 * self.zoom)))
+                # Belső mintázat — kis vonalak mint ágak/levelek
+                for i in range(6):
+                    a = i * math.pi / 3
+                    lx = cr + int(math.cos(a) * r * 0.5)
+                    ly = cr + int(math.sin(a) * r * 0.5)
+                    lx2 = cr + int(math.cos(a) * r * 0.8)
+                    ly2 = cr + int(math.sin(a) * r * 0.8)
+                    pygame.draw.line(shelter_surf, (80, 65, 40, 50), (lx, ly), (lx2, ly2), max(1, int(self.zoom)))
+                self.screen.blit(shelter_surf, (sx - cr, sy - cr))
+                # "S" jelzés ha elég nagy
+                if r > 12:
+                    s_txt = self.font_small.render("S", True, (120, 100, 60))
+                    self.screen.blit(s_txt, (sx - s_txt.get_width() // 2, sy - s_txt.get_height() // 2))
 
         # Feromon heatmap (halványan)
         pm = world.pheromones
@@ -1913,15 +2177,23 @@ class Renderer:
                             pygame.draw.circle(p_surf, (pr, pg, pb, alpha), (r, r), r)
                             self.screen.blit(p_surf, (sx - r, sy - r))
 
-        # Oázisok (legelők) halványan a háttérben
+        # Oázisok (legelők) — zöld folt körvonallal
         for src in world.food_sources:
             sx, sy = self.world_to_screen(src['x'], src['y'])
             r = max(5, int(src['spread'] * 1.5 * self.zoom))
             if -r < sx < self.screen_w + r and -r < sy < self.screen_h + r:
-                oasis_surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
-                alpha = int(15 + src['richness'] * 15)
-                pygame.draw.circle(oasis_surf, (20, 60, 20, alpha), (r, r), r)
-                self.screen.blit(oasis_surf, (sx - r, sy - r))
+                oasis_surf = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
+                cr = r + 2
+                # Belső fény — gazdagság alapján
+                inner_alpha = int(25 + src['richness'] * 25)
+                pygame.draw.circle(oasis_surf, (15, 70, 20, inner_alpha), (cr, cr), r)
+                # Halvány belső mag
+                inner_r = max(3, r // 2)
+                pygame.draw.circle(oasis_surf, (25, 90, 30, inner_alpha + 10), (cr, cr), inner_r)
+                # Körvonal — pöttyözött hatás
+                outline_alpha = int(40 + src['richness'] * 30)
+                pygame.draw.circle(oasis_surf, (40, 110, 35, outline_alpha), (cr, cr), r, max(1, int(self.zoom)))
+                self.screen.blit(oasis_surf, (sx - cr, sy - cr))
 
         # Táplálék rajzolása — méret tükrözi az energiát
         for food_item in world.food:
@@ -2010,13 +2282,17 @@ class Renderer:
                 if cell.hiding and not cell.genome.is_predator():
                     pygame.draw.circle(self.screen, (60, 80, 60), (sx, sy), r + 1, 1)
 
-                # Érzékelési sugár (kiválasztott sejtnél)
+                # Érzékelési sugár + feromon megjelenítés (kiválasztott sejtnél)
                 if self.selected_cell and self.selected_cell.id == cell.id:
                     sense_r = int(cell.genome.sense_range * self.zoom)
                     if sense_r > 2:
                         sense_surf = pygame.Surface((sense_r * 2, sense_r * 2), pygame.SRCALPHA)
                         pygame.draw.circle(sense_surf, (*color, 20), (sense_r, sense_r), sense_r)
+                        pygame.draw.circle(sense_surf, (*color, 35), (sense_r, sense_r), sense_r, 1)
                         self.screen.blit(sense_surf, (sx - sense_r, sy - sense_r))
+
+                    # Feromon heatmap kiemelés a sejt körül
+                    self._draw_selected_pheromones(world, cell)
 
                 # --- Csillók rajzolása ---
                 cilia_angles = cell.genome.cilia_positions()
@@ -2052,9 +2328,24 @@ class Renderer:
                     dir_y = sy + int(math.sin(cell.angle) * r * 0.6)
                     pygame.draw.circle(self.screen, (255, 255, 255), (dir_x, dir_y), max(1, r // 5))
 
-                # Ragadozó: piros szegély
+                # Ragadozó: piros szegély, Mindenevő: narancs szegély
                 if cell.genome.is_predator():
                     pygame.draw.circle(self.screen, (255, 60, 60), (sx, sy), r, 1)
+                elif cell.genome.is_omnivore():
+                    pygame.draw.circle(self.screen, (255, 180, 40), (sx, sy), r, 1)
+
+                # Hibernáció vizuális: szürke, pulzáló kör
+                if cell.hibernating:
+                    pulse = abs(math.sin(cell.age * 0.02)) * 0.5 + 0.5
+                    hib_r = int(r + 2 + pulse * 2)
+                    hib_surf = pygame.Surface((hib_r * 2, hib_r * 2), pygame.SRCALPHA)
+                    pygame.draw.circle(hib_surf, (100, 100, 120, int(60 + pulse * 40)),
+                                     (hib_r, hib_r), hib_r, max(1, int(2 * self.zoom)))
+                    self.screen.blit(hib_surf, (sx - hib_r, sy - hib_r))
+                    # "Zzz" jelzés
+                    if r > 5:
+                        zzz = self.font_small.render("z", True, (150, 150, 180))
+                        self.screen.blit(zzz, (sx + r, sy - r - 5))
 
                 # Sprint effekt: villogó fényes gyűrű
                 if cell.sprinting:
@@ -2119,12 +2410,13 @@ class Renderer:
         alive = len(world.cells)
         pred = world.stats["predators"]
         herb = world.stats["herbivores"]
+        omni = world.stats["omnivores"]
         food = len(world.food)
         gen = world.stats["max_generation"]
 
         status = "SZÜNET" if paused else f"x{sim_speed}"
         info = (f"Tick: {world.tick:,}  |  Sejtek: {alive} "
-                f"(Növényevő: {herb}, Ragadozó: {pred})  |  "
+                f"(N:{herb} M:{omni} R:{pred})  |  "
                 f"Táplálék: {food}  |  Gen: {gen}  |  {status}")
 
         text = self.font_medium.render(info, True, (200, 220, 200))
@@ -2136,7 +2428,7 @@ class Renderer:
         bot_surf.fill((0, 0, 0, 140))
         self.screen.blit(bot_surf, (0, bot_y))
 
-        controls = "SPACE: Szünet | W/S: Sebesség | Nyilak: Kamera | 1: Növényevő | 2: Ragadozó | F: Kaja | M: Beállítások | R: Reset | Scroll: Zoom | Q: Kilépés"
+        controls = "SPACE: Szünet | W/S: Sebesség | Nyilak: Kamera | 1: Növényevő | 2: Ragadozó | 3: Mindenevő | F: Kaja | M: Beállítások | R: Reset | Scroll: Zoom"
         ct = self.font_small.render(controls, True, (140, 140, 160))
         self.screen.blit(ct, (10, bot_y + 5))
 
@@ -2191,8 +2483,52 @@ class Renderer:
                 self.screen.blit(t, (px + 10, y))
                 y += 16
 
+    def _draw_selected_pheromones(self, world, cell):
+        """Kiválasztott sejt körüli feromonok erős megjelenítése."""
+        pm = world.pheromones
+        gs = pm.grid_size
+        sense = cell.genome.sense_range
+        # Sejt pozíciójától sense sugarú körben nézzük a feromonokat
+        col_min = max(0, int((cell.x - sense) / gs))
+        col_max = min(pm.cols - 1, int((cell.x + sense) / gs))
+        row_min = max(0, int((cell.y - sense) / gs))
+        row_max = min(pm.rows - 1, int((cell.y + sense) / gs))
+
+        for row_i in range(row_min, row_max + 1):
+            for col_i in range(col_min, col_max + 1):
+                cell_data = pm.grid[row_i][col_i]
+                if not cell_data:
+                    continue
+                wx = col_i * gs + gs // 2
+                wy = row_i * gs + gs // 2
+                sx, sy = self.world_to_screen(wx, wy)
+                r = max(3, int(gs * 0.45 * self.zoom))
+                if -r < sx < self.screen_w + r and -r < sy < self.screen_h + r:
+                    danger = cell_data.get(PheromoneMap.DANGER, 0)
+                    trail = cell_data.get(PheromoneMap.TRAIL, 0)
+                    food_p = cell_data.get(PheromoneMap.FOOD_HERE, 0)
+                    mate_p = cell_data.get(PheromoneMap.MATE, 0)
+                    prey_p = cell_data.get(PheromoneMap.PREY_SCENT, 0)
+                    ambush_p = cell_data.get(PheromoneMap.AMBUSH, 0)
+
+                    # Egyenként rajzoljuk ki külön színnel, erős alpha-val
+                    pheromones = [
+                        (danger,  (255, 50, 30)),    # Piros — veszély
+                        (trail,   (60, 120, 255)),   # Kék — nyom
+                        (food_p,  (50, 220, 50)),    # Zöld — kaja
+                        (mate_p,  (255, 100, 200)),  # Pink — párkereső
+                        (prey_p,  (255, 160, 40)),   # Narancs — préda szag
+                        (ambush_p,(200, 200, 50)),   # Sárga — lesállás
+                    ]
+                    for val, col in pheromones:
+                        if val > 0.1:
+                            alpha = min(120, int(val * 60))
+                            p_surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+                            pygame.draw.circle(p_surf, (*col, alpha), (r, r), r)
+                            self.screen.blit(p_surf, (sx - r, sy - r))
+
     def _draw_cell_info(self, cell):
-        pw, ph = 270, 400
+        pw, ph = 270, 450
         px = 10
         py = 40
 
@@ -2204,7 +2540,9 @@ class Renderer:
         pygame.draw.rect(self.screen, color, (px, py, pw, ph), 1, border_radius=4)
 
         y = py + 8
-        kind = "Ragadozó" if cell.genome.is_predator() else "Növényevő"
+        kind = "Ragadozó" if cell.genome.is_predator() else ("Mindenevő" if cell.genome.is_omnivore() else "Növényevő")
+        if cell.hibernating:
+            kind += " [HIBERNÁL]"
         title = self.font_medium.render(f"Sejt #{cell.id} ({kind})", True, color)
         self.screen.blit(title, (px + 10, y))
         y += 20
@@ -2281,11 +2619,35 @@ class Renderer:
                 if cell.attacks_here > 0:
                     lines.append(f"  Támadások itt: {cell.attacks_here}")
 
+        # Feromon jelmagyarázat
+        lines.append("")
+        lines.append("--- Feromonok ---")
+
         for line in lines:
             col = (140, 200, 255) if line.startswith("---") else (190, 190, 200)
             t = self.font_small.render(line, True, col)
             self.screen.blit(t, (px + 10, y))
             y += 15
+
+        # Feromon színes jelmagyarázat
+        legend = [
+            ((255, 50, 30), "Veszély"),
+            ((60, 120, 255), "Nyom"),
+            ((50, 220, 50), "Kaja"),
+            ((255, 100, 200), "Pár"),
+            ((255, 160, 40), "Préda szag"),
+            ((200, 200, 50), "Lesállás"),
+        ]
+        lx = px + 15
+        for col, name in legend:
+            pygame.draw.circle(self.screen, col, (lx, y + 6), 4)
+            t = self.font_small.render(name, True, (180, 180, 190))
+            self.screen.blit(t, (lx + 8, y))
+            lx += 8 + t.get_width() + 8
+            if lx > px + pw - 20:
+                lx = px + 15
+                y += 15
+        y += 15
 
     def handle_click(self, pos, world):
         wx, wy = self.screen_to_world(*pos)
@@ -2517,6 +2879,13 @@ class Game:
                     wx, wy = self.renderer.screen_to_world(self.screen_w // 2, self.screen_h // 2)
                     for _ in range(3):
                         self.world.spawn_predator(
+                            wx + random.gauss(0, 30),
+                            wy + random.gauss(0, 30))
+                elif event.key == pygame.K_3:
+                    # Mindenevő spawn a képernyő közepén
+                    wx, wy = self.renderer.screen_to_world(self.screen_w // 2, self.screen_h // 2)
+                    for _ in range(4):
+                        self.world.spawn_omnivore(
                             wx + random.gauss(0, 30),
                             wy + random.gauss(0, 30))
                 elif event.key == pygame.K_r:
