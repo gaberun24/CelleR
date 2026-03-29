@@ -1766,7 +1766,9 @@ class World:
             taunt_interval = max(20, int(80 - tp * 30))  # 20-77 tick között
 
             # 1) MATE TAUNT: ha párt keres és nem lát senkit a közelben
-            if cell.seeking_mate and not any(a.wants_to_mate() for a, _ in allies):
+            #    De ne pazaroljon energiát ha egyedül van és éhes (senki nem hallja)
+            lonely_hungry = cell.genome.is_predator() and not allies and cell.ticks_without_food > 80
+            if cell.seeking_mate and not any(a.wants_to_mate() for a, _ in allies) and not lonely_hungry:
                 if cell.age % taunt_interval == 0:
                     cell.emit_taunt('mate')
 
@@ -2257,8 +2259,9 @@ class World:
             cell.chase_energy_spent = 0.0
             cell.chase_target_id = None
 
-            # Éhezés-alapú vándorlás
-            is_starving = hunger > 250
+            # Magányos ragadozó: hamarabb migrál (nincs falka = nincs jövő)
+            is_lonely = not allies and cell.genome.is_predator()
+            is_starving = hunger > 250 or (is_lonely and hunger > 80)
 
             if is_starving and not cell.migrating:
                 cell.migrating = True
