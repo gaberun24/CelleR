@@ -21,12 +21,22 @@ jobs:
         run: |
           pip install pygame numpy pyinstaller
 
-      - name: Build EXE
+      - name: Build English EXE
         run: |
-          pyinstaller --onefile --windowed --name CelleR --icon NONE cell_evolution_en.py
+          pyinstaller --onefile --windowed --name CelleR_EN cell_evolution_en.py
 
-      - name: Upload EXE
+      - name: Build Hungarian EXE
+        run: |
+          pyinstaller --onefile --windowed --name CelleR_HU cell_evolution.py
+
+      - name: Upload English EXE
         uses: actions/upload-artifact@v4
         with:
-          name: CelleR-Windows
-          path: dist/CelleR.exe
+          name: CelleR-EN-Windows
+          path: dist/CelleR_EN.exe
+
+      - name: Upload Hungarian EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: CelleR-HU-Windows
+          path: dist/CelleR_HU.exe
