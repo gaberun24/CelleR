@@ -3097,7 +3097,7 @@ class Renderer:
         self.flash_timer = 0        # How many frames it's visible
 
         # --- Petri Dish ---
-        self.petri_dish = PetriDish(screen_w, screen_h)
+        self.petri_dish = PetriDish(self.screen_w, self.screen_h)
         self.dragging_cell = None   # Cell being dragged
         self.drag_start = None      # Screen coords where drag started
         self.drag_offset_x = 0      # Offset so cell doesn't jump to cursor
