@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+.claude/
+celler2_save.json
+celler2_genomes/

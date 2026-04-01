@@ -19,7 +19,16 @@ Controls:
   Click       - Select | Scroll: Zoom
   Ctrl+S      - Save (JSON)
   Ctrl+L      - Load (JSON)
-  Q/ESC       - Quit
+  F5          - Simulation screen
+  F6          - Species screen (Latin names, radar chart)
+  F7          - Brain diagram screen
+  F8          - Lineage tree screen
+  Q/ESC       - Quit (ESC returns to sim from other screens)
+
+Tri-Sense System:
+  - Vision: cone-shaped, blocked by obstacles, precise identification
+  - Hearing: 360°, through obstacles, imprecise (direction + rough size)
+  - Smell: 360°, pheromone gradient tracking, temporal (old trails fade)
 """
 
 import pygame
@@ -120,32 +129,69 @@ class Genome:
     """Genetic code of a single-celled organism."""
 
     GENE_NAMES = [
-        "size",          # 0: Size (3-20)
-        "sense_range",   # 1: Sense range (20-200)
-        "attack",        # 2: Attack power (0-10)
-        "defense",       # 3: Defense (0-10)
-        "metabolism",    # 4: Metabolism efficiency (0.3-1.0)
-        "diet",          # 5: Diet (0=herbivore, 1=predator)
-        "repro_thresh",  # 6: Reproduction energy threshold (50-200)
-        "hue",           # 7: Color hue (0-360)
-        "aggression",    # 8: Aggression (0-1)
-        "social",        # 9: Social (0-1)
-        "num_cilia",     # 10: Number of cilia (1-8)
-        "cilia_spread",  # 11: Cilia spread (0=one direction, 1=radial)
-        "cilia_power",   # 12: Power per cilium (0.3-2.0)
-        "turn_rate",     # 13: Turn rate (0.02-0.2 rad/tick)
-        "litter_size",   # 14: Litter size (1-4 offspring at once)
-        "taunt_power",   # 15: Taunt power (0.1-2.0) — wave range and intensity
-        "stealth",       # 16: Stealth (0-1) — harder to detect when moving slowly
+        "size",              # 0: Size (3-25)
+        "vision_range",      # 1: Vision range (15-350) — how far the cell can see
+        "attack",            # 2: Attack power (0-15)
+        "defense",           # 3: Defense (0-15)
+        "metabolism",        # 4: Metabolism efficiency (0.2-1.0)
+        "diet",              # 5: Diet (0=herbivore, 1=predator)
+        "repro_thresh",      # 6: Reproduction energy threshold (40-300)
+        "hue",               # 7: Color hue (0-360)
+        "aggression",        # 8: Aggression (0-1)
+        "social",            # 9: Social (0-1)
+        "num_cilia",         # 10: Number of cilia (1-8)
+        "cilia_spread",      # 11: Cilia spread (0=one direction, 1=radial)
+        "cilia_power",       # 12: Power per cilium (0.2-3.0)
+        "turn_rate",         # 13: Turn rate (0.01-0.25 rad/tick)
+        "litter_size",       # 14: Litter size (1-4 offspring at once)
+        "taunt_power",       # 15: Taunt power (0.05-2.5) — wave range and intensity
+        "stealth",           # 16: Stealth (0-1) — harder to detect when moving slowly
+        "vision_angle",      # 17: Vision cone angle in radians (0.52-5.24, ~30-300 deg)
+        "hearing_range",     # 18: Hearing range in pixels (20-400)
+        "smell_range",       # 19: Smell range in pheromone grid cells (1-10)
+        "smell_sensitivity", # 20: Smell sensitivity threshold (0.01-1.0)
+        "horn_size",         # 21: Horn/tusk size (0-5) — passive damage + herd defense, costs speed & energy
+        "sprint_power",      # 22: Sprint power (0.3-2.5) — faster sprints but higher energy drain
+        "longevity",         # 23: Longevity (0.5-3.0) — lifespan multiplier, costs metabolism
+        "regeneration",      # 24: Regeneration (0.2-2.0) — HP regen rate multiplier, costs energy
+        "memory_capacity",   # 25: Memory capacity (1-10) — max memory slots, costs energy (brain)
+        "maturity_rate",     # 26: Maturity rate (0.5-2.0) — growth speed, fast=more energy needed
+        "endurance",         # 27: Endurance (0.3-2.0) — sprint duration vs recharge tradeoff
+        "bravery",           # 28: Bravery (0-1) — flee threshold, brave=eats more but riskier
+        "camouflage",        # 29: Camouflage (0-1) — hiding/ambush effectiveness
+        "fertility",         # 30: Fertility (0.5-2.0) — mate cooldown modifier, high=frequent but costly
+        "night_vision",      # 31: Night vision (0-1) — detection threshold bonus
+    ]
+
+    EXPECTED_GENE_COUNT = 32
+    _GENE_DEFAULTS = [
+        7.0, 180.0, 2.0, 1.5, 0.6, 0.5, 65.0, 180.0,  # 0-7
+        0.5, 0.3, 3.0, 0.5, 1.0, 0.07, 1.5, 0.7, 0.25,  # 8-16
+        2.0, 120.0, 3.0, 0.3,  # 17-20: vision_angle, hearing_range, smell_range, smell_sensitivity
+        0.0,  # 21: horn_size
+        1.0,  # 22: sprint_power
+        1.5,  # 23: longevity
+        1.0,  # 24: regeneration
+        5.0,  # 25: memory_capacity
+        1.0,  # 26: maturity_rate
+        1.0,  # 27: endurance
+        0.5,  # 28: bravery
+        0.0,  # 29: camouflage
+        1.0,  # 30: fertility
+        0.3,  # 31: night_vision
     ]
 
     def __init__(self, genes=None):
         if genes is not None:
-            self.genes = np.array(genes, dtype=float)
+            g = list(genes)
+            # Pad old save files (17 genes) to 22
+            while len(g) < self.EXPECTED_GENE_COUNT:
+                g.append(self._GENE_DEFAULTS[len(g)])
+            self.genes = np.array(g[:self.EXPECTED_GENE_COUNT], dtype=float)
         else:
             self.genes = np.array([
                 random.uniform(5, 12),      # size
-                random.uniform(120, 250),   # sense_range (detect from farther)
+                random.uniform(120, 250),   # vision_range
                 random.uniform(0.5, 4),     # attack
                 random.uniform(0.5, 3),     # defense
                 random.uniform(0.4, 0.8),   # metabolism
@@ -160,27 +206,61 @@ class Genome:
                 random.uniform(0.03, 0.12), # turn_rate
                 random.uniform(1, 2),       # litter_size
                 random.uniform(0.2, 1.2),   # taunt_power (volume)
-                random.uniform(0.0, 0.5),   # stealth (stealth ability)
+                random.uniform(0.0, 0.5),   # stealth
+                random.uniform(1.0, 4.0),   # vision_angle (radians, ~57-230 deg)
+                random.uniform(60, 200),    # hearing_range (pixels)
+                random.uniform(2, 6),       # smell_range (pheromone grid cells)
+                random.uniform(0.1, 0.6),   # smell_sensitivity
+                random.uniform(0.0, 1.0),   # horn_size (random cells: small/no horns)
+                random.uniform(0.5, 1.5),   # sprint_power
+                random.uniform(0.8, 2.0),   # longevity
+                random.uniform(0.5, 1.5),   # regeneration
+                random.uniform(3, 7),       # memory_capacity
+                random.uniform(0.7, 1.5),   # maturity_rate
+                random.uniform(0.5, 1.5),   # endurance
+                random.uniform(0.2, 0.8),   # bravery
+                random.uniform(0.0, 0.3),   # camouflage
+                random.uniform(0.6, 1.4),   # fertility
+                random.uniform(0.1, 0.5),   # night_vision
             ], dtype=float)
         self._cache = {}  # Cached derived values (invalidated on gene change)
 
     @property
-    def size(self): return max(3, min(25, self.genes[0]))
+    def size(self):
+        v = self._cache.get('size')
+        if v is None:
+            v = max(3, min(25, self.genes[0]))
+            self._cache['size'] = v
+        return v
     @property
-    def sense_range(self): return max(15, min(350, self.genes[1]))
+    def vision_range(self):
+        v = self._cache.get('vr')
+        if v is None:
+            v = max(15, min(350, self.genes[1]))
+            self._cache['vr'] = v
+        return v
+    @property
+    def sense_range(self): return self.vision_range
     @property
     def attack(self):
-        base = max(0, min(15, self.genes[2]))
-        # Predators have minimum combat capability (claws/teeth don't disappear)
-        if self.diet > 0.7:
-            base = max(2.0, base)
-        return base
+        v = self._cache.get('atk')
+        if v is None:
+            v = max(0, min(15, self.genes[2]))
+            if self.diet > 0.7:
+                v = max(2.0, v)
+            self._cache['atk'] = v
+        return v
     @property
     def defense(self): return max(0, min(15, self.genes[3]))
     @property
     def metabolism(self): return max(0.2, min(1.0, self.genes[4]))
     @property
-    def diet(self): return max(0, min(1, self.genes[5]))
+    def diet(self):
+        v = self._cache.get('diet')
+        if v is None:
+            v = max(0, min(1, self.genes[5]))
+            self._cache['diet'] = v
+        return v
     @property
     def repro_thresh(self): return max(40, min(300, self.genes[6]))
     @property
@@ -203,6 +283,43 @@ class Genome:
     def taunt_power(self): return max(0.05, min(2.5, self.genes[15] if len(self.genes) > 15 else 0.5))
     @property
     def stealth(self): return max(0.0, min(1.0, self.genes[16] if len(self.genes) > 16 else 0.2))
+    @property
+    def vision_angle(self): return max(0.52, min(5.24, self.genes[17] if len(self.genes) > 17 else 2.0))
+    @property
+    def hearing_range(self): return max(20, min(400, self.genes[18] if len(self.genes) > 18 else 120))
+    @property
+    def smell_range(self): return max(1, min(10, int(round(self.genes[19])) if len(self.genes) > 19 else 3))
+    @property
+    def smell_sensitivity(self): return max(0.01, min(1.0, self.genes[20] if len(self.genes) > 20 else 0.3))
+    @property
+    def horn_size(self): return max(0, min(5, self.genes[21] if len(self.genes) > 21 else 0.0))
+    @property
+    def sprint_power(self): return max(0.3, min(2.5, self.genes[22] if len(self.genes) > 22 else 1.0))
+    @property
+    def longevity(self): return max(0.5, min(3.0, self.genes[23] if len(self.genes) > 23 else 1.5))
+    @property
+    def regeneration(self): return max(0.2, min(2.0, self.genes[24] if len(self.genes) > 24 else 1.0))
+    @property
+    def memory_capacity(self): return max(1, min(10, int(round(self.genes[25])) if len(self.genes) > 25 else 5))
+    @property
+    def maturity_rate(self): return max(0.5, min(2.0, self.genes[26] if len(self.genes) > 26 else 1.0))
+    @property
+    def endurance(self): return max(0.3, min(2.0, self.genes[27] if len(self.genes) > 27 else 1.0))
+    @property
+    def bravery(self): return max(0.0, min(1.0, self.genes[28] if len(self.genes) > 28 else 0.5))
+    @property
+    def camouflage(self): return max(0.0, min(1.0, self.genes[29] if len(self.genes) > 29 else 0.0))
+    @property
+    def fertility(self): return max(0.5, min(2.0, self.genes[30] if len(self.genes) > 30 else 1.0))
+    @property
+    def night_vision(self): return max(0.0, min(1.0, self.genes[31] if len(self.genes) > 31 else 0.3))
+
+    @property
+    def cos_half_vision(self):
+        """Cached cosine of half vision angle for cone checks."""
+        if '_cos_half_v' not in self._cache:
+            self._cache['_cos_half_v'] = math.cos(self.vision_angle / 2)
+        return self._cache['_cos_half_v']
 
     @property
     def max_speed(self):
@@ -277,6 +394,60 @@ class Genome:
                 new_genes[i] += random.gauss(0, scale)
         return Genome(new_genes)
 
+    # Gene ranges for normalization (min, max) — used by genetic_similarity
+    _GENE_RANGES = [
+        (3, 25),    # 0: size
+        (15, 350),  # 1: vision_range
+        (0, 15),    # 2: attack
+        (0, 15),    # 3: defense
+        (0.2, 1.0), # 4: metabolism
+        (0, 1),     # 5: diet
+        (40, 300),  # 6: repro_thresh
+        (0, 360),   # 7: hue (excluded from similarity)
+        (0, 1),     # 8: aggression
+        (0, 1),     # 9: social
+        (1, 8),     # 10: num_cilia
+        (0, 1),     # 11: cilia_spread
+        (0.2, 3.0), # 12: cilia_power
+        (0.01, 0.25), # 13: turn_rate
+        (1, 4),     # 14: litter_size
+        (0.05, 2.5), # 15: taunt_power
+        (0, 1),     # 16: stealth
+        (0.52, 5.24), # 17: vision_angle
+        (20, 400),  # 18: hearing_range
+        (1, 10),    # 19: smell_range
+        (0.01, 1.0), # 20: smell_sensitivity
+        (0, 5),     # 21: horn_size
+        (0.3, 2.5), # 22: sprint_power
+        (0.5, 3.0), # 23: longevity
+        (0.2, 2.0), # 24: regeneration
+        (1, 10),    # 25: memory_capacity
+        (0.5, 2.0), # 26: maturity_rate
+        (0.3, 2.0), # 27: endurance
+        (0, 1),     # 28: bravery
+        (0, 1),     # 29: camouflage
+        (0.5, 2.0), # 30: fertility
+        (0, 1),     # 31: night_vision
+    ]
+
+    def genetic_similarity(self, other):
+        """Normalized genetic similarity (0.0 = completely different, 1.0 = identical).
+        Excludes hue (cosmetic) from comparison. Diet gene has 3x weight."""
+        total_diff = 0.0
+        gene_count = 0
+        for i in range(min(len(self.genes), len(other.genes), len(self._GENE_RANGES))):
+            if i == 7:  # Skip hue — cosmetic only
+                continue
+            lo, hi = self._GENE_RANGES[i]
+            span = hi - lo
+            if span < 0.001:
+                continue
+            diff = abs(self.genes[i] - other.genes[i]) / span
+            weight = 3.0 if i == 5 else 1.0  # Diet gene weighted 3x
+            total_diff += min(1.0, diff) * weight
+            gene_count += weight
+        return max(0.0, 1.0 - total_diff / gene_count) if gene_count > 0 else 0.0
+
     def crossover(self, other, self_fitness=0.5, other_fitness=0.5):
         """Fitness-weighted crossover: better parent's genes are inherited more often.
         For some genes, takes the weighted average of both parents (blend)."""
@@ -301,7 +472,7 @@ class Genome:
 
 # --- Pheromone system ---
 class PheromoneMap:
-    """Chemical signals on the map — cells leave pheromones."""
+    """Chemical signals on the map — numpy-backed for speed."""
     TRAIL = 0       # Trail tracking (I was here)
     DANGER = 1      # Danger (predator was here)
     FOOD_HERE = 2   # Food is/was here
@@ -309,6 +480,7 @@ class PheromoneMap:
     MATE = 4        # Mating pheromone (I want to reproduce!)
     PREY_SCENT = 5  # Prey scent (herbivore trail, detected by predators)
     CORPSE_SCENT = 6  # Corpse scent (carcass stench, growing cloud)
+    NUM_TYPES = 7
 
     def __init__(self, width, height):
         self.width = width
@@ -316,76 +488,72 @@ class PheromoneMap:
         self.grid_size = PHEROMONE_GRID_SIZE
         self.cols = width // self.grid_size + 1
         self.rows = height // self.grid_size + 1
-        # Each cell: {type: intensity} dict
-        self.grid = [[{} for _ in range(self.cols)] for _ in range(self.rows)]
+        # 3D numpy array: [rows, cols, pheromone_types]
+        self.data = np.zeros((self.rows, self.cols, self.NUM_TYPES), dtype=np.float32)
 
     def deposit(self, x, y, ptype, intensity=1.0):
-        """Deposit pheromone at a point."""
         col = int(x / self.grid_size)
         row = int(y / self.grid_size)
         if 0 <= row < self.rows and 0 <= col < self.cols:
-            cell = self.grid[row][col]
-            cell[ptype] = min(cell.get(ptype, 0) + intensity, 5.0)
+            self.data[row, col, ptype] = min(self.data[row, col, ptype] + intensity, 5.0)
 
     def deposit_cloud(self, x, y, ptype, intensity=1.0, radius=3):
-        """Pheromone cloud — spreads widely, stronger at center."""
         col = int(x / self.grid_size)
         row = int(y / self.grid_size)
-        radius_sq = radius * radius
+        r1 = max(0, row - radius)
+        r2 = min(self.rows, row + radius + 1)
+        c1 = max(0, col - radius)
+        c2 = min(self.cols, col + radius + 1)
         inv_radius = 1.0 / (radius + 1)
-        for dr in range(-radius, radius + 1):
-            for dc in range(-radius, radius + 1):
-                r, c = row + dr, col + dc
-                if 0 <= r < self.rows and 0 <= c < self.cols:
-                    dist_sq = dr * dr + dc * dc
-                    if dist_sq <= radius_sq:
-                        # Fast approximation instead of sqrt: Manhattan-ish falloff
-                        falloff = max(0.1, 1.0 - (abs(dr) + abs(dc)) * 0.5 * inv_radius)
-                        cell = self.grid[r][c]
-                        cell[ptype] = min(cell.get(ptype, 0) + intensity * falloff, 5.0)
+        radius_sq = radius * radius
+        for r in range(r1, r2):
+            dr = r - row
+            for c in range(c1, c2):
+                dc = c - col
+                if dr * dr + dc * dc <= radius_sq:
+                    falloff = max(0.1, 1.0 - (abs(dr) + abs(dc)) * 0.5 * inv_radius)
+                    self.data[r, c, ptype] = min(self.data[r, c, ptype] + intensity * falloff, 5.0)
 
     def read(self, x, y, ptype, radius=1):
-        """Read pheromone intensity at a point (including neighboring cells)."""
         col = int(x / self.grid_size)
         row = int(y / self.grid_size)
-        total = 0
-        for dr in range(-radius, radius + 1):
-            for dc in range(-radius, radius + 1):
-                r, c = row + dr, col + dc
-                if 0 <= r < self.rows and 0 <= c < self.cols:
-                    total += self.grid[r][c].get(ptype, 0)
-        return total
+        r1 = max(0, row - radius)
+        r2 = min(self.rows, row + radius + 1)
+        c1 = max(0, col - radius)
+        c2 = min(self.cols, col + radius + 1)
+        return float(self.data[r1:r2, c1:c2, ptype].sum())
 
     def read_gradient(self, x, y, ptype):
-        """Pheromone gradient direction (where it gets stronger)."""
         col = int(x / self.grid_size)
         row = int(y / self.grid_size)
-        gx, gy = 0.0, 0.0
-        for dr in range(-2, 3):
-            for dc in range(-2, 3):
-                r, c = row + dr, col + dc
-                if 0 <= r < self.rows and 0 <= c < self.cols:
-                    val = self.grid[r][c].get(ptype, 0)
-                    if val > 0:
-                        gx += dc * val
-                        gy += dr * val
+        r1 = max(0, row - 2)
+        r2 = min(self.rows, row + 3)
+        c1 = max(0, col - 2)
+        c2 = min(self.cols, col + 3)
+        patch = self.data[r1:r2, c1:c2, ptype]
+        if patch.sum() < 0.05:
+            return 0.0, 0.0
+        # Build offset arrays for the patch
+        dr_start = r1 - row
+        dc_start = c1 - col
+        rows_p, cols_p = patch.shape
+        gx = 0.0
+        gy = 0.0
+        for ri in range(rows_p):
+            for ci in range(cols_p):
+                v = patch[ri, ci]
+                if v > 0:
+                    gx += (dc_start + ci) * v
+                    gy += (dr_start + ri) * v
         return gx, gy
 
-    # Decay compensation: called every 3rd tick, so 3x exponentiation
-    _DECAY_COMPENSATED = PHEROMONE_DECAY ** 3  # 0.995^3 ~ 0.98507
+    # Decay compensation: called every 3rd tick
+    _DECAY_COMPENSATED = np.float32(PHEROMONE_DECAY ** 3)
 
     def decay(self):
-        """Pheromone decay (compensated: called every 3rd tick)."""
-        decay_factor = PheromoneMap._DECAY_COMPENSATED
-        for row in self.grid:
-            for cell in row:
-                to_remove = []
-                for ptype in cell:
-                    cell[ptype] *= decay_factor
-                    if cell[ptype] < 0.05:
-                        to_remove.append(ptype)
-                for k in to_remove:
-                    del cell[k]
+        self.data *= self._DECAY_COMPENSATED
+        # Zero out near-zero values to save memory bandwidth
+        self.data[self.data < 0.05] = 0
 
 
 # --- Single-celled organism ---
@@ -411,6 +579,8 @@ class Cell:
         self.kills = 0
         self.children = 0
         self.generation = 0
+        self.parent_id = None
+        self.parent2_id = None
         # Pack/herd
         self.target_id = None     # Current target (prey) id
         self.alert = False        # Received danger alert
@@ -456,12 +626,12 @@ class Cell:
         # --- HP system ---
         self.max_hp = self.genome.size ** 2 * 0.5  # Bigger = more HP
         self.hp = self.max_hp
-        self.hp_regen = 0.02 + self.genome.size * 0.003  # Slow regen
+        self.hp_regen = (0.02 + self.genome.size * 0.003) * self.genome.regeneration
         self.damaged_flash = 0       # Damage visual effect
         # --- Juvenile period ---
         self.is_child = True          # Born as juvenile
         self.maturity = 0.4           # Starts at 40% size
-        self.mature_age = 120 + int(self.genome.size * 8)  # Bigger ones grow longer
+        self.mature_age = int((120 + self.genome.size * 8) / self.genome.maturity_rate)  # Gene-driven growth
         # --- Combat ---
         self.attacking_target = None  # Who it's currently damaging
         self.being_attacked_by = []   # Who is attacking it
@@ -507,6 +677,9 @@ class Cell:
     @property
     def current_size(self):
         """Current size (smaller during juvenile period)."""
+        cs = getattr(self, '_cs', 0)
+        if cs > 0:
+            return cs
         if self.is_child:
             return self.genome.size * self.maturity
         return self.genome.size
@@ -540,9 +713,11 @@ class Cell:
         child_bonus = 1.3 if self.is_child else 1.0  # Juveniles are faster
         # Omnivores are slower: dual digestive system = heavier body
         omni_penalty = 0.85 if self.genome.is_omnivore() else 1.0
+        # Horn weight slows you down (horn_size 5 = 15% slower)
+        horn_penalty = 1.0 - self.genome.horn_size * 0.03
         # Disease makes you slower
         sick_penalty = DISEASE_SPEED_PENALTY if self.sick else 1.0
-        return hp_mult * child_bonus * self.alertness * omni_penalty * sick_penalty
+        return hp_mult * child_bonus * self.alertness * omni_penalty * horn_penalty * sick_penalty
 
     def energy_cost_per_tick(self):
         # Hibernation: minimal metabolism (1%)
@@ -551,34 +726,48 @@ class Cell:
         base = 0.018 if not self.genome.is_predator() else 0.02
         if self.genome.is_omnivore():
             base = 0.025  # Omnivore: dual digestive system is expensive
-        size_cost = self.genome.size * 0.003
+        size_cost = self.genome.size * 0.002
         # Cilia maintenance cost
-        cilia_cost = self.genome.num_cilia * self.genome.cilia_power * 0.006
+        cilia_cost = self.genome.num_cilia * self.genome.cilia_power * 0.003
         # Active movement cost - almost zero when resting
         if self.thrust < 0.1:
             move_cost = 0.001  # Resting: almost free
         else:
-            move_cost = self.thrust * self.genome.num_cilia * self.genome.cilia_power * 0.008
-        # Sprint extra cost
+            move_cost = self.thrust * self.genome.num_cilia * self.genome.cilia_power * 0.006
+        # Sprint extra cost: sprint_power * size amplifies energy burn
         if self.sprinting:
-            move_cost *= 2.5
+            move_cost *= 1.5 + self.genome.sprint_power * 0.8 + self.genome.size * 0.04
         # Ambushing / hiding: minimal energy
         if self.ambushing or self.hiding:
             return base * AMBUSH_ENERGY_MULT + size_cost * 0.5
         # Predators: attacking is cheaper (specialized for it)
         if self.genome.is_predator():
-            attack_cost = self.genome.attack * 0.001
+            attack_cost = self.genome.attack * 0.002
         else:
-            attack_cost = self.genome.attack * 0.004
-        sense_cost = self.genome.sense_range * 0.00012
+            attack_cost = self.genome.attack * 0.003
+        # Wide vision costs more (processing all that visual data)
+        # angle^1.3 makes wide vision disproportionately expensive
+        sense_cost = (self.genome.vision_range * (self.genome.vision_angle ** 1.3) * 0.000015
+                      + self.genome.hearing_range * 0.00003
+                      + self.genome.smell_range * 0.0001)
+        # Horn maintenance cost (heavy keratin growth)
+        horn_cost = self.genome.horn_size * 0.0008
+        # Brain/body maintenance costs for new genes
+        regen_cost = max(0, (self.genome.regeneration - 1.0)) * 0.001  # Fast healing costs energy
+        brain_cost = max(0, (self.genome.memory_capacity - 3)) * 0.0003  # Big brain is expensive
+        longevity_cost = max(0, (self.genome.longevity - 1.0)) * 0.0008  # Longer life = cell maintenance
+        fertility_cost = max(0, (self.genome.fertility - 1.0)) * 0.0008  # Reproductive system upkeep
         # Stealth maintenance cost (predator specialization)
-        stealth_cost = self.genome.stealth * 0.002 if self.genome.is_predator() else 0
+        stealth_cost = self.genome.stealth * 0.001 if self.genome.is_predator() else 0
+        camo_cost = self.genome.camouflage * 0.0005  # Camouflage pigment maintenance
         efficiency = self.genome.metabolism
-        return (base + size_cost + cilia_cost + move_cost + attack_cost + sense_cost + stealth_cost) * efficiency
+        return (base + size_cost + cilia_cost + move_cost + attack_cost + sense_cost + horn_cost + regen_cost + brain_cost + longevity_cost + fertility_cost + stealth_cost + camo_cost) * efficiency
 
     def update(self, world_w, world_h, obstacles=None, energy_drain=1.0):
         if not self.alive:
             return
+        # Cache current_size for this tick
+        self._cs = self.genome.size * self.maturity if self.is_child else self.genome.size
 
         self.age += 1
         self.energy -= self.energy_cost_per_tick() * energy_drain
@@ -700,8 +889,9 @@ class Cell:
             self.hunting_spots = [(x, y, i * 0.9) for x, y, i in self.hunting_spots if i * 0.9 > 0.1]
             self.food_spots = [(x, y, a * 0.95) for x, y, a in self.food_spots if a * 0.95 > 0.15]
 
-        # Age asymmetry: predators live long (knowledge accumulation), herbivores short (r strategy)
-        age_limit = 5000 if self.genome.is_predator() else 2500
+        # Longevity gene determines lifespan (base varies by diet)
+        base_lifespan = 3500 if self.genome.is_predator() else 2000
+        age_limit = int(base_lifespan * self.genome.longevity)
         if self.age > age_limit:
             self.energy -= 0.04 * (self.age - age_limit) / 1000
 
@@ -719,22 +909,24 @@ class Cell:
         else:
             self.angle += effective_turn if angle_diff > 0 else -effective_turn
 
-        # --- Sprint handling ---
-        # Larger cells drain sprint faster
-        # Larger prey tires faster: size 5=1.9, size 15=4.5, size 25=8.5
-        # Predators are built for chasing — less size penalty
-        if self.genome.is_predator():
-            sprint_drain = 1.5 + self.genome.size * 0.12
-        else:
-            sprint_drain = 1.2 + self.genome.size * 0.29
-        sprint_recharge = max(0.1, 0.6 - self.genome.size * 0.02)  # Larger ones recharge slower
+        # --- Sprint handling (gene-driven: sprint_power + endurance) ---
+        sp = self.genome.sprint_power
+        endur = self.genome.endurance
+        # Sprint drain: bigger body + stronger sprint = burns WAY more energy
+        # Endurance reduces drain (marathon runner vs sprinter)
+        sprint_drain = (0.8 + self.genome.size * 0.15) * sp / max(0.5, endur)
+        if not self.genome.is_predator():
+            sprint_drain *= 1.3  # Non-predators less efficient sprinters
+        # Recharge: endurance = faster recovery, sprint_power helps too
+        sprint_recharge = max(0.1, (0.3 + endur * 0.3 + sp * 0.1) - self.genome.size * 0.012)
         if self.sprint_cooldown > 0:
             self.sprint_cooldown -= 1
         if self.sprinting:
             self.sprint_energy -= sprint_drain
             if self.sprint_energy <= 0:
                 self.sprinting = False
-                self.sprint_cooldown = int(40 + self.genome.size * 3)  # Larger ones rest longer
+                # Cooldown: high endurance = shorter recovery
+                self.sprint_cooldown = int((30 + self.genome.size * 2 + sp * 8) / max(0.5, endur))
                 self.sprint_energy = 0
         else:
             if self.sprint_cooldown <= 0:
@@ -753,9 +945,11 @@ class Cell:
             # Apply slowdown
             if self.slow_ticks > 0:
                 thrust *= self.slow_factor
-            # Predators sprint harder (hunting rush)
+            # Sprint speed: gene-driven (sprint_power 0.3=1.3x, 1.0=1.7x, 2.5=2.4x)
             if self.sprinting:
-                sprint_mult = 2.2 if self.genome.is_predator() else 1.6
+                sprint_mult = 1.0 + self.genome.sprint_power * 0.55
+                if self.genome.is_predator():
+                    sprint_mult += 0.2  # Predator hunting rush bonus
             else:
                 sprint_mult = 1.0
             cilia_cs = self.genome.cilia_cos_sin()  # Pre-computed (cos, sin) per cilium
@@ -891,7 +1085,7 @@ class Cell:
         prey_def = prey.genome.defense
         prey_isolated = 1.0 if prey.pack_mates < 2 else 0.0
         self.prey_memory.append((prey_def, prey_speed, prey_isolated, success))
-        if len(self.prey_memory) > 10:
+        if len(self.prey_memory) > self.genome.memory_capacity * 2:
             self.prey_memory.pop(0)  # Remove oldest
 
         # Update preferences from experience
@@ -958,18 +1152,119 @@ class Cell:
         return score
 
     def emit_taunt(self, taunt_type, target_id=None):
-        """Emit taunt — sonar ping, range and speed depend on taunt_power gene."""
+        """Emit vocalization — sonar ping, range and speed depend on taunt_power gene."""
         tp = self.genome.taunt_power
         self.taunt_type = taunt_type
         base_timer = int(30 + tp * 15)  # Stronger gene = longer wave (30-67 ticks)
         # Predator mate calls travel 2x farther (sparse population, need wider reach)
         if taunt_type == 'mate' and self.genome.is_predator():
             base_timer *= 2
+        # Scan (echolocation) travels faster but shorter
+        if taunt_type == 'scan':
+            base_timer = int(base_timer * 0.6)
         self.taunt_timer = base_timer
         self.taunt_radius = 0.0
         self.taunt_target_id = target_id
         # Stronger taunt = more expensive (trade-off: energy vs range)
-        self.energy -= 0.5 + tp * 1.5
+        cost = 0.5 + tp * 1.5
+        if taunt_type == 'scan':
+            cost *= 1.5  # Echolocation is energy-intensive
+        if taunt_type == 'lure':
+            cost *= 0.8  # Deceptive calls are quieter/cheaper
+        self.energy -= cost
+
+    def _vocalize_risk_benefit(self, allies, enemies, senses=None):
+        """Evaluate whether vocalizing is worth the risk. Returns (should_vocalize, best_type, target_id).
+        Considers stealth, energy, nearby threats, and potential benefit."""
+        tp = self.genome.taunt_power
+        if tp < 0.1 or self.is_child or self.taunt_timer > 0:
+            return False, None, None
+
+        # --- Risk assessment ---
+        # Stealth/camo cells don't want to reveal position
+        silence_pressure = self.genome.stealth * 0.4 + self.genome.camouflage * 0.3
+        # Hiding/ambushing = absolutely silent
+        if self.ambushing or self.hiding:
+            silence_pressure += 0.8
+        # Low energy = conserve
+        energy_ratio = self.energy / max(self.genome.repro_thresh, 1)
+        if energy_ratio < 0.3:
+            silence_pressure += 0.4
+        # Low HP = don't attract attention
+        if self.hp < self.max_hp * 0.4:
+            silence_pressure += 0.3
+
+        # Nearby enemies increase risk
+        enemy_threat = 0
+        for other, dist in enemies:
+            threat = 1.0 - dist / max(self.genome.sense_range, 1)
+            enemy_threat = max(enemy_threat, threat)
+        silence_pressure += enemy_threat * 0.5
+
+        # --- Benefit assessment for each type ---
+        best_type = None
+        best_benefit = 0
+        best_target = None
+
+        # 1) FLEE: being attacked -> panic signal (highest priority, overrides silence if social)
+        if self.being_attacked_by and self.genome.social > 0.15:
+            # Bravery reduces panic tendency
+            flee_benefit = (1.0 - self.genome.bravery * 0.5) * self.genome.social
+            if flee_benefit > best_benefit:
+                best_benefit = flee_benefit
+                best_type = 'flee'
+
+        # 2) MATE: seeking partner
+        if self.seeking_mate:
+            has_ready_ally = any(a.wants_to_mate() for a, _ in allies) if allies else False
+            if not has_ready_ally:
+                mate_benefit = 0.5 + self.genome.fertility * 0.2
+                if mate_benefit > best_benefit:
+                    best_benefit = mate_benefit
+                    best_type = 'mate'
+
+        # 3) ATTACK: alpha predator coordinates pack
+        if (self.genome.is_predator() and self.target_id is not None
+                and self.genome.aggression > 0.3 and self.pack_mates >= 2):
+            attack_benefit = self.genome.aggression * 0.6 + self.pack_mates * 0.1
+            if attack_benefit > best_benefit:
+                best_benefit = attack_benefit
+                best_type = 'attack'
+                best_target = self.target_id
+
+        # 4) SCAN: echolocation — useful when can't see well (narrow vision, lost target)
+        if self.genome.is_predator() and tp > 0.5:
+            no_visual = not any(True for o, _ in enemies if not o.genome.is_predator())
+            if no_visual and self.ticks_without_food > 60:
+                scan_benefit = tp * 0.4
+                if scan_benefit > best_benefit:
+                    best_benefit = scan_benefit
+                    best_type = 'scan'
+
+        # 5) LURE: deceptive call — predator with high stealth tricks prey
+        if (self.genome.is_predator() and self.genome.stealth > 0.4
+                and self.genome.aggression > 0.5 and self.ticks_without_food > 80):
+            # Only if no prey visible (need to attract them)
+            has_prey = any(True for o, _ in enemies if not o.genome.is_predator())
+            if not has_prey:
+                lure_benefit = self.genome.stealth * 0.5 + self.genome.aggression * 0.3
+                # Lure has LOW risk (it's quiet and deceptive)
+                if lure_benefit > best_benefit:
+                    best_benefit = lure_benefit
+                    best_type = 'lure'
+
+        if best_type is None:
+            return False, None, None
+
+        # --- Decision: benefit must outweigh risk ---
+        # Flee always goes through if social (survival > stealth)
+        if best_type == 'flee':
+            return True, 'flee', None
+
+        # For others: risk/benefit check
+        if best_benefit > silence_pressure:
+            return True, best_type, best_target
+        return False, None, None
 
     def remember_food(self, x, y):
         """Remember where food was found. Reinforces nearby spots."""
@@ -983,7 +1278,7 @@ class Cell:
                 return
         # New pasture discovered
         self.food_spots.append((x, y, 1.0))
-        if len(self.food_spots) > 5:
+        if len(self.food_spots) > self.genome.memory_capacity:
             # Remove weakest
             self.food_spots.sort(key=lambda s: s[2], reverse=True)
             self.food_spots.pop()
@@ -997,7 +1292,7 @@ class Cell:
                 self.danger_zones[i] = (dx, dy, min(level + 0.5, 5.0))
                 return
         self.danger_zones.append((pred_x, pred_y, 1.0))
-        if len(self.danger_zones) > 5:
+        if len(self.danger_zones) > self.genome.memory_capacity:
             self.danger_zones.sort(key=lambda z: z[2], reverse=True)
             self.danger_zones.pop()
 
@@ -1081,7 +1376,7 @@ class Cell:
             return self.energy >= thresh * (1.0 + extra)
         return True
 
-    def reproduce(self, partner=None, repro_cost=None):
+    def reproduce(self, partner, repro_cost=None):
         # K vs r strategy: predator = fewer strong offspring, herbivore = many fast offspring
         if self.genome.is_predator():
             # Experienced hunters can have twins (like lions/wolves with 2-3 cubs)
@@ -1103,15 +1398,11 @@ class Cell:
 
         children = []
         for i in range(litter):
-            if partner:
-                # Fitness-weighted crossover: better parent's genes dominate
-                self_fit = self.calc_fitness()
-                partner_fit = partner.calc_fitness()
-                child_genome = self.genome.crossover(
-                    partner.genome, self_fit, partner_fit).mutate()
-            else:
-                # Parentless reproduction (asexual): mutation only
-                child_genome = self.genome.mutate()
+            # Sexual reproduction only — fitness-weighted crossover
+            self_fit = self.calc_fitness()
+            partner_fit = partner.calc_fitness()
+            child_genome = self.genome.crossover(
+                partner.genome, self_fit, partner_fit).mutate()
 
             # --- Evolutionary diet shift under starvation pressure ---
             # If parent has been starving, offspring may shift diet "upward":
@@ -1146,6 +1437,8 @@ class Cell:
             offset_y = math.sin(angle) * dist
             child = Cell(self.x + offset_x, self.y + offset_y, child_genome, per_child_energy)
             child.generation = self.generation + 1
+            child.parent_id = self.id
+            child.parent2_id = partner.id if partner else None
             # Child HP = proportional to small size
             child.max_hp = (child.genome.size * child.maturity) ** 2 * 0.5
             child.hp = child.max_hp
@@ -1226,13 +1519,18 @@ class SpatialGrid:
     def query(self, x, y, radius):
         """Returns all objects within the given radius."""
         results = []
-        min_gx = int((x - radius) // self.cell_size)
-        max_gx = int((x + radius) // self.cell_size)
-        min_gy = int((y - radius) // self.cell_size)
-        max_gy = int((y + radius) // self.cell_size)
+        cs = self.cell_size
+        min_gx = int((x - radius) // cs)
+        max_gx = int((x + radius) // cs)
+        min_gy = int((y - radius) // cs)
+        max_gy = int((y + radius) // cs)
+        grid = self.grid
+        _extend = results.extend
         for gx in range(min_gx, max_gx + 1):
             for gy in range(min_gy, max_gy + 1):
-                results.extend(self.grid.get((gx, gy), []))
+                bucket = grid.get((gx, gy))
+                if bucket:
+                    _extend(bucket)
         return results
 
 
@@ -1269,12 +1567,16 @@ class World:
             'energy_drain': 1.0,
             'pred_sense': 1.0,
         }
+        self.lineage = {}  # {cell_id: {parent_id, parent2_id, born_tick, died_tick, diet, generation, species_name}}
+        self._cached_species = []  # Species clusters (recalculated periodically)
         self._init()
 
     def _init(self):
         self.cells = []
         self.food = []
         self.tick = 0
+        self.lineage = {}
+        self._cached_species = []
         Cell._id_counter = 0
 
         # Pheromone map
@@ -1421,8 +1723,9 @@ class World:
         # 2) Stealth gene reduces base detectability
         gene_stealth = predator.genome.stealth * 0.35  # Max 0.35 bonus
 
-        # 3) Hiding/ambushing further reduction
-        hide_bonus = 0.25 if (predator.ambushing or predator.hiding) else 0.0
+        # 3) Hiding/ambushing further reduction (camouflage gene amplifies hiding)
+        camo = predator.genome.camouflage
+        hide_bonus = (0.25 + camo * 0.3) if (predator.ambushing or predator.hiding) else camo * 0.1
 
         # Total stealth (cap 0.95 — always minimal chance)
         stealth = min(0.95, (1.0 - base_visibility) * 0.6 + gene_stealth + hide_bonus)
@@ -1495,10 +1798,145 @@ class World:
                 food_e = self.settings['food_energy'] * random.uniform(0.4, 1.8)
                 self.food.append((x, y, food_e, False))
 
+    # --- Tri-Sense System ---
+
+    def _query_vision(self, cell):
+        """Return cells visible in the vision cone: [(other_cell, distance)].
+        Uses spatial grid broadphase + dot-product cone filter + LOS + stealth.
+        Narrow cone = extended effective range (focused vision)."""
+        # Focused vision bonus: narrower cone sees further
+        # angle=1.0rad -> 1.35x range, angle=0.5rad -> 1.6x, angle=4.0rad -> 0.85x
+        angle = cell.genome.vision_angle
+        focus_bonus = max(0.8, min(1.7, 1.5 - angle * 0.17))
+        vr = cell.genome.vision_range * focus_bonus
+        fx = math.cos(cell.angle)
+        fy = math.sin(cell.angle)
+        cos_half = cell.genome.cos_half_vision
+        results = []
+        for other in self.cell_grid.query(cell.x, cell.y, vr):
+            if other.id == cell.id or not other.alive:
+                continue
+            dx = other.x - cell.x
+            dy = other.y - cell.y
+            dist_sq = dx * dx + dy * dy
+            if dist_sq > vr * vr:
+                continue
+            dist = math.sqrt(dist_sq)
+            if dist < 0.01:
+                continue
+            # Cone check via dot product
+            dot = (dx * fx + dy * fy) / dist
+            if dot < cos_half:
+                continue
+            # Line of sight (obstacles block vision)
+            if not self.has_line_of_sight(cell.x, cell.y, other.x, other.y):
+                continue
+            results.append((other, dist))
+        return results
+
+    def _query_hearing(self, cell):
+        """Return heard entities (360 deg, through obstacles, imprecise).
+        Returns list of dicts: {angle, dist, noise, size_cat, actual_ref}."""
+        hr = cell.genome.hearing_range
+        results = []
+        for other in self.cell_grid.query(cell.x, cell.y, hr):
+            if other.id == cell.id or not other.alive:
+                continue
+            noise = getattr(other, '_cached_noise', 0)
+            if noise < 0.3:
+                continue
+            dx = other.x - cell.x
+            dy = other.y - cell.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > hr or dist < 0.01:
+                continue
+            # Imprecise direction (Gaussian noise proportional to distance)
+            true_angle = math.atan2(dy, dx)
+            noise_std = (dist / hr) * 0.5
+            perceived_angle = true_angle + random.gauss(0, noise_std)
+            # Imprecise distance
+            perceived_dist = dist * random.uniform(0.8, 1.2)
+            # Rough size category
+            sz = other.current_size
+            size_cat = 'small' if sz < 6 else ('large' if sz > 12 else 'medium')
+            results.append({
+                'angle': perceived_angle,
+                'dist': perceived_dist,
+                'noise': noise,
+                'size_cat': size_cat,
+                'actual_ref': other,
+            })
+        # Water source sounds
+        for ws in self.water_sources:
+            dx = ws['x'] - cell.x
+            dy = ws['y'] - cell.y
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist < hr:
+                results.append({
+                    'angle': math.atan2(dy, dx),
+                    'dist': dist,
+                    'noise': 3.0,
+                    'size_cat': 'water',
+                    'actual_ref': None,
+                })
+        return results
+
+    def _query_smell(self, cell):
+        """Return smelled pheromone data based on smell genes.
+        Returns dict: {ptype: {intensity, gx, gy}}.
+        Cached: only recalculated every 3 ticks."""
+        cache = getattr(cell, '_smell_cache', None)
+        cache_tick = getattr(cell, '_smell_cache_tick', -10)
+        if cache is not None and self.tick - cache_tick < 3:
+            return cache
+        sr = cell.genome.smell_range
+        thresh = cell.genome.smell_sensitivity
+        results = {}
+        # Only query relevant types per diet to avoid wasted reads
+        is_pred = cell.genome.diet > 0.7
+        types_to_check = [1, 4, 5, 6] if is_pred else [0, 1, 2, 4, 6]  # Skip irrelevant types
+        for ptype in types_to_check:
+            intensity = self.pheromones.read(cell.x, cell.y, ptype, radius=sr)
+            if intensity < thresh:
+                continue
+            gx, gy = self.pheromones.read_gradient(cell.x, cell.y, ptype)
+            results[ptype] = {'intensity': intensity, 'gx': gx, 'gy': gy}
+        cell._smell_cache = results
+        cell._smell_cache_tick = self.tick
+        return results
+
+    def _build_sense_data(self, cell):
+        """Build the three-channel awareness dict for AI. Cached per tick."""
+        cache_tick = getattr(cell, '_sense_tick', -1)
+        if cache_tick == self.tick:
+            return cell._sense_cache
+        result = {
+            'seen': self._query_vision(cell),
+            'heard': self._query_hearing(cell),
+            'smelled': self._query_smell(cell),
+        }
+        cell._sense_cache = result
+        cell._sense_tick = self.tick
+        return result
+
+    def _cache_noise_all(self):
+        """Pre-compute noise for all cells at the start of the tick."""
+        for cell in self.cells:
+            if not cell.alive:
+                cell._cached_noise = 0
+                continue
+            spd = math.sqrt(cell.vx * cell.vx + cell.vy * cell.vy)
+            max_spd = max(cell.genome.max_speed * cell.effective_speed_mult, 0.01)
+            speed_ratio = min(spd / max_spd, 1.0)
+            stealth = cell.genome.stealth
+            cell._cached_noise = speed_ratio * cell.current_size * (1.0 - stealth * 0.7)
+            if cell.hibernating or (cell.ambushing and speed_ratio < 0.05):
+                cell._cached_noise = 0
+
     def save_to_json(self, filepath="cell_save.json"):
         """Save world state to JSON file."""
         data = {
-            'version': 1,
+            'version': 2,
             'tick': self.tick,
             'width': self.width,
             'height': self.height,
@@ -1543,8 +1981,12 @@ class World:
                 'sick': c.sick,
                 'sick_ticks': c.sick_ticks,
                 'immune_ticks': c.immune_ticks,
+                'parent_id': c.parent_id,
+                'parent2_id': c.parent2_id,
             }
             data['cells'].append(cell_data)
+        # Save lineage (convert int keys to str for JSON)
+        data['lineage'] = {str(k): v for k, v in self.lineage.items()}
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=1)
         return len(data['cells'])
@@ -1608,7 +2050,13 @@ class World:
             cell.prefer_weak = cd.get('prefer_weak', 0.0)
             cell.prefer_isolated = cd.get('prefer_isolated', 0.0)
             cell.prefer_slow = cd.get('prefer_slow', 0.0)
+            cell.parent_id = cd.get('parent_id', None)
+            cell.parent2_id = cd.get('parent2_id', None)
             self.cells.append(cell)
+
+        # Load lineage (convert str keys back to int)
+        raw_lineage = data.get('lineage', {})
+        self.lineage = {int(k): v for k, v in raw_lineage.items()}
 
         # Spatial grid rebuild
         self.cell_grid = SpatialGrid()
@@ -1619,6 +2067,168 @@ class World:
             self.food_grid.insert(i, f[0], f[1])
 
         return len(self.cells)
+
+    def _prune_lineage(self):
+        """Keep only ancestors of living cells, prune the rest."""
+        living_ids = {c.id for c in self.cells if c.alive}
+        keep = set()
+        def walk(cid):
+            if cid is None or cid in keep:
+                return
+            keep.add(cid)
+            entry = self.lineage.get(cid)
+            if entry:
+                walk(entry.get('parent_id'))
+                walk(entry.get('parent2_id'))
+        for cid in living_ids:
+            walk(cid)
+        self.lineage = {k: v for k, v in self.lineage.items() if k in keep}
+
+    # --- Species Classification & Latin Names ---
+
+    _GENUS_NAMES = {
+        'pred': ['Carnifera', 'Raptoris', 'Venator', 'Ferox'],
+        'herb': ['Herbifera', 'Pascua', 'Viridis', 'Folium'],
+        'omni': ['Omnivora', 'Versatilis', 'Mixta', 'Adapta'],
+    }
+    # (trait_name, value_fn, max_for_normalization, epithet_names)
+    _SPECIES_TRAITS = [
+        ('speed',      lambda g: g.max_speed,     8.0,   ['Velocis', 'Celeris', 'Rapida']),
+        ('size_big',   lambda g: g.size,           25.0,  ['Magnus', 'Grandis', 'Vastus']),
+        ('aggression', lambda g: g.aggression,     1.0,   ['Bellica', 'Pugnax', 'Saeva']),
+        ('social',     lambda g: g.social,         1.0,   ['Gregalis', 'Communis', 'Socialis']),
+        ('stealth',    lambda g: g.stealth,        1.0,   ['Umbra', 'Furtiva', 'Silens']),
+        ('defense',    lambda g: g.defense,        15.0,  ['Fortis', 'Dura', 'Robusta']),
+        ('vision',     lambda g: g.vision_range,   350.0, ['Ocularis', 'Perspicax', 'Vigilis']),
+        ('hearing',    lambda g: g.hearing_range,  400.0, ['Aurita', 'Acutis', 'Sonora']),
+        ('smell',      lambda g: g.smell_range,    10.0,  ['Naris', 'Olfacta', 'Odora']),
+        ('attack',     lambda g: g.attack,         15.0,  ['Feralis', 'Mordens', 'Lethalis']),
+        ('horned',     lambda g: g.horn_size,       5.0,   ['Cornuta', 'Cerata', 'Spinosa']),
+        ('sprinter',   lambda g: g.sprint_power,    2.5,   ['Scatta', 'Cursora', 'Volanta']),
+        ('enduring',   lambda g: g.endurance,       2.0,   ['Durans', 'Firma', 'Tenax']),
+        ('brave',      lambda g: g.bravery,         1.0,   ['Audax', 'Intrepida', 'Fortax']),
+        ('hidden',     lambda g: g.camouflage,      1.0,   ['Crypta', 'Latens', 'Phantasma']),
+        ('fertile',    lambda g: g.fertility,       2.0,   ['Fecunda', 'Prolis', 'Mater']),
+        ('ancient',    lambda g: g.longevity,       3.0,   ['Antiqua', 'Longaeva', 'Senex']),
+    ]
+
+    def _classify_species(self):
+        """Cluster living cells by genome similarity. Returns list of species dicts."""
+        adults = [c for c in self.cells if c.alive and not c.is_child]
+        if not adults:
+            self._cached_species = []
+            return
+
+        # Gene indices for clustering
+        feat_idx = [0, 1, 2, 3, 5, 8, 9, 10, 16, 17, 18, 19]
+        # Min/max for normalization
+        mins = np.array([3, 15, 0, 0, 0, 0, 0, 1, 0, 0.52, 20, 1], dtype=float)
+        maxs = np.array([25, 350, 15, 15, 1, 1, 1, 8, 1, 5.24, 400, 10], dtype=float)
+        ranges = maxs - mins
+        ranges[ranges < 0.01] = 1.0
+
+        # Extract feature vectors
+        feats = []
+        for c in adults:
+            vec = np.array([c.genome.genes[i] for i in feat_idx], dtype=float)
+            feats.append((vec - mins) / ranges)
+        feats = np.array(feats)
+
+        # Simple agglomerative clustering
+        threshold = 0.35
+        clusters = []  # [{centroid, members}]
+        for i, fv in enumerate(feats):
+            best_cluster = None
+            best_dist = threshold
+            for ci, cl in enumerate(clusters):
+                d = np.sqrt(np.sum((fv - cl['centroid']) ** 2))
+                if d < best_dist:
+                    best_dist = d
+                    best_cluster = ci
+            if best_cluster is not None:
+                cl = clusters[best_cluster]
+                n = len(cl['members'])
+                cl['centroid'] = (cl['centroid'] * n + fv) / (n + 1)
+                cl['members'].append(adults[i])
+            else:
+                clusters.append({'centroid': fv.copy(), 'members': [adults[i]]})
+
+        # Generate names and stats
+        species = []
+        for cl in clusters:
+            if len(cl['members']) < 1:
+                continue
+            members = cl['members']
+            avg_diet = sum(c.genome.diet for c in members) / len(members)
+            # Genus from diet
+            if avg_diet > 0.7:
+                diet_key = 'pred'
+            elif avg_diet > 0.3:
+                diet_key = 'omni'
+            else:
+                diet_key = 'herb'
+            genus_list = self._GENUS_NAMES[diet_key]
+            # Deterministic genus selection from centroid hash
+            centroid_hash = int(abs(hash(tuple(cl['centroid'][:4].round(2)))))
+            genus = genus_list[centroid_hash % len(genus_list)]
+
+            # Species epithet from dominant secondary trait
+            avg_genome = members[0].genome  # Use first as representative
+            best_trait = None
+            best_val = -1
+            for trait_name, trait_fn, trait_max, _ in self._SPECIES_TRAITS:
+                vals = [trait_fn(c.genome) for c in members]
+                avg = sum(vals) / len(vals) / max(trait_max, 0.01)
+                if avg > best_val:
+                    best_val = avg
+                    best_trait = trait_name
+            epithet = 'Communis'
+            for trait_name, _, _, names in self._SPECIES_TRAITS:
+                if trait_name == best_trait:
+                    epithet = names[centroid_hash % len(names)]
+                    break
+
+            name = f"{genus} {epithet}"
+
+            species.append({
+                'name': name,
+                'count': len(members),
+                'members': members,
+                'centroid': cl['centroid'],
+                'avg_diet': avg_diet,
+                'avg_gen': sum(c.generation for c in members) / len(members),
+                'avg_size': sum(c.genome.size for c in members) / len(members),
+                'avg_speed': sum(c.genome.max_speed for c in members) / len(members),
+                'avg_attack': sum(c.genome.attack for c in members) / len(members),
+                'avg_defense': sum(c.genome.defense for c in members) / len(members),
+                'avg_aggression': sum(c.genome.aggression for c in members) / len(members),
+                'avg_social': sum(c.genome.social for c in members) / len(members),
+                'avg_stealth': sum(c.genome.stealth for c in members) / len(members),
+                'avg_vision_range': sum(c.genome.vision_range for c in members) / len(members),
+                'avg_vision_angle': sum(c.genome.vision_angle for c in members) / len(members),
+                'avg_hearing': sum(c.genome.hearing_range for c in members) / len(members),
+                'avg_smell': sum(c.genome.smell_range for c in members) / len(members),
+                'avg_horn': sum(c.genome.horn_size for c in members) / len(members),
+                'avg_sprint': sum(c.genome.sprint_power for c in members) / len(members),
+                'avg_longevity': sum(c.genome.longevity for c in members) / len(members),
+                'avg_regen': sum(c.genome.regeneration for c in members) / len(members),
+                'avg_memory': sum(c.genome.memory_capacity for c in members) / len(members),
+                'avg_maturity': sum(c.genome.maturity_rate for c in members) / len(members),
+                'avg_endurance': sum(c.genome.endurance for c in members) / len(members),
+                'avg_bravery': sum(c.genome.bravery for c in members) / len(members),
+                'avg_camouflage': sum(c.genome.camouflage for c in members) / len(members),
+                'avg_fertility': sum(c.genome.fertility for c in members) / len(members),
+                'avg_night_vision': sum(c.genome.night_vision for c in members) / len(members),
+            })
+
+        species.sort(key=lambda s: s['count'], reverse=True)
+        self._cached_species = species
+        # Update lineage entries with species names
+        for sp in species:
+            sp_name = sp.get('name', '')
+            for m in sp.get('members', []):
+                if m.id in self.lineage:
+                    self.lineage[m.id]['species_name'] = sp_name
 
     # --- NumPy vectorized batch operations ---
 
@@ -1790,6 +2400,9 @@ class World:
         for i, food_item in enumerate(self.food):
             self.food_grid.insert(i, food_item[0], food_item[1])
 
+        # Pre-cache noise for hearing system
+        self._cache_noise_all()
+
         # AI and movement
         new_cells = []
         for cell in self.cells:
@@ -1825,7 +2438,12 @@ class World:
                         cloud_intensity, cloud_radius)
             else:
                 cell.mate_search_ticks = 0
-            self._cell_ai(cell)
+            # AI throttle: non-urgent cells think every 2nd tick (saves ~40% CPU)
+            urgent = (cell.stun_ticks > 0 or cell.being_attacked_by or
+                      cell.attacking_target or cell.sprinting or
+                      cell.ai_state in ("Menekülés", "Vadászat", "Támadás", "Flee", "Echolokáció"))
+            if urgent or (cell.id + self.tick) % 2 == 0:
+                self._cell_ai(cell)
 
             # Population pressure: dominant species pays more energy, rare species pays less
             if cell.genome.is_predator():
@@ -1843,6 +2461,9 @@ class World:
                 corpse_energy = max(5, corpse_energy)
                 self.food.append((cell.x, cell.y, corpse_energy, True, self.tick))
                 self.stats["total_died"] += 1
+                # Record death in lineage
+                if cell.id in self.lineage:
+                    self.lineage[cell.id]['died_tick'] = self.tick
                 continue
 
             # Everyone eats - but based on type: herbivore=plant, predator=meat
@@ -1859,15 +2480,24 @@ class World:
                 mate_range = cell.radius * 6 + 20 if cell.genome.is_predator() else cell.radius * 4 + 12
                 partner = None
                 nearby = self.cell_grid.query(cell.x, cell.y, mate_range)
+                is_crossbreed = False
                 for other in nearby:
                     if other.id == cell.id or not other.alive:
                         continue
                     if other.is_child or other.mate_cooldown > 0:
                         continue
-                    # Reproductive isolation: only same species can mate
+                    # Mate compatibility: same species preferred, crossbreeding possible
                     same_type = abs(cell.genome.diet - other.genome.diet) < 0.15
                     if not same_type:
-                        continue
+                        # Cross-breeding: check genetic similarity (>80% required)
+                        similarity = cell.genome.genetic_similarity(other.genome)
+                        if similarity < 0.80:
+                            continue
+                        # Cross-breeding is rare: chance scales with similarity
+                        # 80% → 5% chance, 90% → 25%, 95%+ → 35%
+                        cross_chance = max(0.05, min(0.35, (similarity - 0.78) * 1.8))
+                        if random.random() > cross_chance:
+                            continue
                     dx = other.x - cell.x
                     dy = other.y - cell.y
                     dist = math.sqrt(dx*dx + dy*dy)
@@ -1875,6 +2505,7 @@ class World:
                         continue
                     if other.wants_to_mate():
                         partner = other
+                        is_crossbreed = not same_type
                         break
                     # Energy sharing: if caller is rich, gift energy to partner
                     # so they can reach reproduction threshold (courtship feeding)
@@ -1887,14 +2518,37 @@ class World:
                             other.energy += deficit
                             if other.wants_to_mate():
                                 partner = other
+                                is_crossbreed = not same_type
                                 break
                 if partner:
                     # Both reproduce, partner also gets cooldown
                     children = cell.reproduce(partner, repro_cost=self.settings['repro_cost'])
-                    # Predators: shorter cooldown (pack proximity = easier mating)
-                    cooldown = 120 if cell.genome.is_predator() else 200
-                    cell.mate_cooldown = cooldown
-                    partner.mate_cooldown = cooldown
+                    # Cross-breed hybrids: extra mutation + fertility penalty
+                    if is_crossbreed:
+                        for child in children:
+                            # Genetic instability: double mutation pass
+                            child.genome = child.genome.mutate()
+                            # Hybrid vigor OR penalty: random fitness modifier
+                            # 30% chance of hybrid vigor (slightly better stats)
+                            # 70% chance of reduced fertility (like mule)
+                            if random.random() < 0.3:
+                                # Hybrid vigor: small boost to a random gene
+                                boost_idx = random.choice([0, 1, 3, 22, 24, 27])  # size/vision/def/sprint/regen/endurance
+                                child.genome.genes[boost_idx] *= random.uniform(1.05, 1.15)
+                            else:
+                                # Reduced fertility (partial sterility)
+                                child.genome.genes[30] *= random.uniform(0.3, 0.7)
+                            child.genome._invalidate_cache()
+                        self.stats.setdefault("crossbreeds", 0)
+                        self.stats["crossbreeds"] += len(children)
+                    # Fertility gene drives cooldown (high fertility = breed often)
+                    base_cd = 100 if cell.genome.is_predator() else 160
+                    cell.mate_cooldown = int(base_cd / cell.genome.fertility)
+                    partner.mate_cooldown = int(base_cd / partner.genome.fertility)
+                    # Cross-breeding: longer cooldown (unusual mating = exhausting)
+                    if is_crossbreed:
+                        cell.mate_cooldown = int(cell.mate_cooldown * 1.5)
+                        partner.mate_cooldown = int(partner.mate_cooldown * 1.5)
                     cell.seeking_mate = False
                     partner.seeking_mate = False
                     # Partner energy deduction happens in reproduce(), not here!
@@ -1907,43 +2561,7 @@ class World:
             else:
                 cell.seeking_mate = False
 
-            # --- Last-of-species asexual division ---
-            # If this cell's species has very few members (<= 3), allow cell division
-            # without a partner. Survival instinct: split when alone!
-            if cell.genome.is_predator():
-                my_species_count = self.stats.get("predators", 0)
-            elif cell.genome.is_omnivore():
-                my_species_count = self.stats.get("omnivores", 0)
-            else:
-                my_species_count = self.stats.get("herbivores", 0)
-            if my_species_count <= 8 and not cell.is_child and cell.mate_cooldown <= 0:
-                # Lower threshold for asexual reproduction when endangered
-                # More endangered = lower threshold + cheaper cost
-                if my_species_count <= 1:
-                    asex_thresh = cell.genome.repro_thresh * 0.25  # Desperate: any energy will do
-                    asex_cost = self.settings['repro_cost'] * 0.35
-                    asex_cooldown = 30
-                elif my_species_count <= 3:
-                    asex_thresh = cell.genome.repro_thresh * 0.4
-                    asex_cost = self.settings['repro_cost'] * 0.5
-                    asex_cooldown = 50
-                elif my_species_count <= 5:
-                    asex_thresh = cell.genome.repro_thresh * 0.55
-                    asex_cost = self.settings['repro_cost'] * 0.6
-                    asex_cooldown = 70
-                else:
-                    asex_thresh = cell.genome.repro_thresh * 0.7
-                    asex_cost = self.settings['repro_cost'] * 0.7
-                    asex_cooldown = 90
-                if cell.energy > asex_thresh:
-                    children = cell.reproduce(partner=None, repro_cost=asex_cost)
-                    cell.mate_cooldown = asex_cooldown
-                    for child in children:
-                        child.x = np.clip(child.x, 5, self.width - 5)
-                        child.y = np.clip(child.y, 5, self.height - 5)
-                        new_cells.append(child)
-                        self.stats["total_born"] += 1
-                        self.stats["max_generation"] = max(self.stats["max_generation"], child.generation)
+            # Asexual reproduction removed — cells can only reproduce with a partner
 
         # Predator attacks
         for cell in self.cells:
@@ -1971,7 +2589,21 @@ class World:
             # Hard cap: trim remaining if still over
             if len(self.cells) + len(new_cells) > max_pop:
                 new_cells = new_cells[:max(0, max_pop - len(self.cells))]
+        # Record births in lineage
+        for c in new_cells:
+            self.lineage[c.id] = {
+                'parent_id': c.parent_id,
+                'parent2_id': c.parent2_id,
+                'born_tick': self.tick,
+                'died_tick': None,
+                'diet': c.genome.diet,
+                'generation': c.generation,
+                'species_name': '',
+            }
         self.cells.extend(new_cells)
+        # Prune lineage if too large (keep ancestors of living cells)
+        if len(self.lineage) > 5000:
+            self._prune_lineage()
 
         # --- Vectorized overcrowding penalty (numpy batch) ---
         self._vectorized_overcrowding()
@@ -2091,6 +2723,10 @@ class World:
             if len(self.pop_history) > 600:
                 self.pop_history = self.pop_history[-600:]
 
+        # Species classification (every 300 ticks)
+        if self.tick % 300 == 0:
+            self._classify_species()
+
     def _give_initial_knowledge(self, cell):
         """Give a new cell knowledge of nearest food source + watering hole."""
         if self.food_sources and not cell.food_spots:
@@ -2106,11 +2742,27 @@ class World:
         """Manual herbivore spawn."""
         g = Genome()
         g.genes[5] = random.uniform(0.0, 0.3)   # diet: herbivore
-        g.genes[1] = random.uniform(150, 280)    # sense_range: good perception
+        g.genes[1] = random.uniform(150, 280)    # vision_range: good perception
         g.genes[3] = random.uniform(2, 5)        # defense
         g.genes[6] = random.uniform(35, 70)      # repro_thresh: low threshold
         g.genes[9] = random.uniform(0.3, 0.7)    # social
         g.genes[14] = random.uniform(1.5, 3)     # litter_size: more offspring
+        # Tri-sense: wide vision, good hearing & smell
+        g.genes[17] = random.uniform(2.5, 4.5)   # vision_angle: wide (prey eye)
+        g.genes[18] = random.uniform(120, 280)    # hearing_range: high alertness
+        g.genes[19] = random.uniform(3, 7)        # smell_range: good foraging
+        g.genes[20] = random.uniform(0.1, 0.3)    # smell_sensitivity: sensitive
+        g.genes[21] = random.uniform(0.5, 3.5)    # horn_size: herbivores have horns
+        g.genes[22] = random.uniform(0.5, 1.2)    # sprint_power: moderate (flee bursts)
+        g.genes[23] = random.uniform(0.7, 1.5)    # longevity: short-medium (r strategy)
+        g.genes[24] = random.uniform(0.8, 1.5)    # regeneration: decent healing
+        g.genes[25] = random.uniform(4, 7)         # memory_capacity: good spatial memory
+        g.genes[26] = random.uniform(0.8, 1.5)    # maturity_rate: fast growth
+        g.genes[27] = random.uniform(0.6, 1.5)    # endurance: decent stamina for fleeing
+        g.genes[28] = random.uniform(0.1, 0.5)    # bravery: mostly cautious
+        g.genes[29] = random.uniform(0.0, 0.3)    # camouflage: low
+        g.genes[30] = random.uniform(0.8, 1.8)    # fertility: breeds often
+        g.genes[31] = random.uniform(0.2, 0.6)    # night_vision: moderate alertness
         c = Cell(x, y, g, energy=100)
         self._give_initial_knowledge(c)
         self.cells.append(c)
@@ -2121,9 +2773,25 @@ class World:
         g = Genome()
         g.genes[5] = random.uniform(0.75, 1.0)
         g.genes[2] = random.uniform(3, 6)
-        g.genes[1] = random.uniform(100, 200)
+        g.genes[1] = random.uniform(100, 200)     # vision_range
         g.genes[9] = random.uniform(0.3, 0.7)
-        g.genes[6] = random.uniform(30, 55)     # repro_thresh: lower
+        g.genes[6] = random.uniform(30, 55)        # repro_thresh: lower
+        # Tri-sense: narrow focused vision, moderate hearing, low smell
+        g.genes[17] = random.uniform(0.8, 1.5)    # vision_angle: narrow (hunter eye)
+        g.genes[18] = random.uniform(80, 180)      # hearing_range: moderate
+        g.genes[19] = random.uniform(2, 4)         # smell_range: basic tracking
+        g.genes[20] = random.uniform(0.3, 0.6)     # smell_sensitivity: less sensitive
+        g.genes[21] = 0.0                           # horn_size: predators have no horns
+        g.genes[22] = random.uniform(1.0, 2.0)    # sprint_power: high (hunting rush)
+        g.genes[23] = random.uniform(1.5, 2.5)    # longevity: long life (experience)
+        g.genes[24] = random.uniform(0.5, 1.2)    # regeneration: moderate
+        g.genes[25] = random.uniform(5, 9)         # memory_capacity: good hunting memory
+        g.genes[26] = random.uniform(0.6, 1.0)    # maturity_rate: slow growth (K strategy)
+        g.genes[27] = random.uniform(0.8, 1.8)    # endurance: good stamina for chasing
+        g.genes[28] = random.uniform(0.5, 0.9)    # bravery: bold hunters
+        g.genes[29] = random.uniform(0.1, 0.6)    # camouflage: ambush predators higher
+        g.genes[30] = random.uniform(0.5, 1.0)    # fertility: breeds less often
+        g.genes[31] = random.uniform(0.3, 0.8)    # night_vision: sharp senses
         c = Cell(x, y, g, energy=160)
         self._give_initial_knowledge(c)
         self.cells.append(c)
@@ -2133,12 +2801,28 @@ class World:
         """Manual omnivore spawn."""
         g = Genome()
         g.genes[5] = random.uniform(0.35, 0.65)   # diet: omnivore range
-        g.genes[1] = random.uniform(120, 230)      # sense_range
+        g.genes[1] = random.uniform(120, 230)      # vision_range
         g.genes[2] = random.uniform(1, 3)          # attack: low
         g.genes[3] = random.uniform(2, 5)          # defense: medium
         g.genes[6] = random.uniform(40, 80)        # repro_thresh
         g.genes[9] = random.uniform(0.2, 0.6)      # social
         g.genes[14] = random.uniform(1, 2.5)       # litter_size
+        # Tri-sense: balanced senses
+        g.genes[17] = random.uniform(1.5, 3.0)    # vision_angle: medium
+        g.genes[18] = random.uniform(100, 200)     # hearing_range: medium
+        g.genes[19] = random.uniform(3, 5)         # smell_range: medium
+        g.genes[20] = random.uniform(0.15, 0.4)    # smell_sensitivity: medium
+        g.genes[21] = random.uniform(0.0, 1.5)    # horn_size: omnivores have small horns
+        g.genes[22] = random.uniform(0.6, 1.4)    # sprint_power: balanced
+        g.genes[23] = random.uniform(1.0, 2.0)    # longevity: medium
+        g.genes[24] = random.uniform(0.6, 1.3)    # regeneration: medium
+        g.genes[25] = random.uniform(4, 8)         # memory_capacity: versatile
+        g.genes[26] = random.uniform(0.7, 1.3)    # maturity_rate: medium
+        g.genes[27] = random.uniform(0.5, 1.5)    # endurance: medium
+        g.genes[28] = random.uniform(0.3, 0.7)    # bravery: moderate
+        g.genes[29] = random.uniform(0.0, 0.4)    # camouflage: some
+        g.genes[30] = random.uniform(0.7, 1.5)    # fertility: medium
+        g.genes[31] = random.uniform(0.2, 0.5)    # night_vision: medium
         c = Cell(x, y, g, energy=100)
         self._give_initial_knowledge(c)
         self.cells.append(c)
@@ -2164,18 +2848,21 @@ class World:
             cell.thrust = 0.0
             cell.vx = 0.0
             cell.vy = 0.0
-            # Wake up: prey within sense range!
-            sense = cell.genome.sense_range
-            nearby_cells = self.cell_grid.query(cell.x, cell.y, sense)
+            # Wake up from SOUND: hibernating cells can't see, they listen
+            hear_range = cell.genome.hearing_range
+            nearby_cells = self.cell_grid.query(cell.x, cell.y, hear_range)
             for other in nearby_cells:
                 if other.id == cell.id or not other.alive:
                     continue
                 if other.genome.is_predator():
                     continue  # Predator doesn't wake it up
+                noise = getattr(other, '_cached_noise', 0)
+                if noise < 1.0:
+                    continue  # Too quiet to wake from
                 dx = other.x - cell.x
                 dy = other.y - cell.y
                 dist = math.sqrt(dx * dx + dy * dy)
-                if dist < sense:
+                if dist < hear_range:
                     # WAKE UP! Adrenaline rush at the cost of HP!
                     cell.hibernating = False
                     cell.sprint_energy = 60
@@ -2183,21 +2870,24 @@ class World:
                     cell.hp -= cell.max_hp * 0.15     # Muscle atrophy cost for the final rush
                     cell.steer_towards(other.x, other.y, 1.0)
                     break
+            # Wake from smell: nearby prey scent
+            if cell.hibernating:
+                smell_data = self._query_smell(cell)
+                # Check for prey pheromone (type 0 = general presence)
+                for ptype, sdata in smell_data.items():
+                    if sdata['intensity'] > 0.5:
+                        cell.hibernating = False
+                        break
             # Omnivore hibernating: food also wakes it up
             if cell.hibernating and cell.genome.is_omnivore():
-                nearby_food = self.food_grid.query(cell.x, cell.y, sense * 0.5)
+                nearby_food = self.food_grid.query(cell.x, cell.y, hear_range * 0.5)
                 if nearby_food:
                     cell.hibernating = False
             cell.ai_state = "Hibernating"
             return  # No other AI during hibernation
 
-        sense = cell.genome.sense_range
-        # Well-fed prey: reduced awareness (alertness 0.65-1.0)
-        if not cell.genome.is_predator():
-            sense *= cell.alertness
-        else:
-            sense *= self.settings.get('pred_sense', 1.0)
-        nearby_cells = self.cell_grid.query(cell.x, cell.y, sense)
+        # --- Tri-sense system ---
+        senses = self._build_sense_data(cell)
 
         # Starvation counter (no starvation in first 300 ticks, has starting energy)
         if cell.last_eat_tick > 0:
@@ -2207,42 +2897,26 @@ class World:
         else:
             cell.ticks_without_food = 0
 
-        # Separate allies and enemies + leader search
+        # Allies and enemies come from VISION only (what you can see, you can identify)
         allies = []
         enemies = []
         cell.pack_mates = 0
         best_leader = None
-        best_leader_score = cell.calc_leadership()  # Own leadership
+        best_leader_score = cell.calc_leadership()
 
-        for other in nearby_cells:
-            if other.id == cell.id or not other.alive:
-                continue
-            dx = other.x - cell.x
-            dy = other.y - cell.y
-            dist = math.sqrt(dx * dx + dy * dy)
-            if dist > sense:
-                continue
-            # Line of sight check — can't see behind obstacles
-            if not self.has_line_of_sight(cell.x, cell.y, other.x, other.y):
-                continue
-            # Alliance determination with species-level logic:
-            # Predator + predator = allies
-            # Herbivore + herbivore = allies
-            # Omnivore + herbivore = allies (mixed herd)
-            # Omnivore + omnivore = allies
-            # Predator + anyone else = enemies
+        for other, dist in senses['seen']:
+            # Alliance determination
             cell_pred = cell.genome.is_predator()
             other_pred = other.genome.is_predator()
             if cell_pred and other_pred:
                 is_same_type = True
             elif cell_pred or other_pred:
-                is_same_type = False  # Predator vs non-predator = enemy
+                is_same_type = False
             else:
-                is_same_type = True   # Herbivore/omnivore = allies
+                is_same_type = True
             if is_same_type:
                 allies.append((other, dist))
                 cell.pack_mates += 1
-                # Leader search: more experienced + more social = better leader
                 if cell.genome.social > 0.3:
                     other_score = other.calc_leadership()
                     if other_score > best_leader_score:
@@ -2251,110 +2925,134 @@ class World:
             else:
                 enemies.append((other, dist))
 
+        # --- Hearing alert: heard-but-not-seen entities ---
+        # If something loud is heard outside vision cone, turn toward it
+        seen_ids = {other.id for other, _ in senses['seen']}
+        for heard in senses['heard']:
+            ref = heard.get('actual_ref')
+            if ref is None or ref.id in seen_ids:
+                continue
+            if heard['noise'] > 1.5 and not cell.genome.is_predator():
+                # Prey hears loud movement -> alert!
+                cell.alert = True
+                cell.alert_x = cell.x + math.cos(heard['angle']) * heard['dist']
+                cell.alert_y = cell.y + math.sin(heard['angle']) * heard['dist']
+            elif heard['noise'] > 1.0 and cell.genome.is_predator():
+                # Predator hears prey-sized movement -> investigate
+                if not enemies:  # No visible prey, use hearing
+                    cell.alert = True
+                    cell.alert_x = cell.x + math.cos(heard['angle']) * heard['dist']
+                    cell.alert_y = cell.y + math.sin(heard['angle']) * heard['dist']
+
+        # Peripheral awareness: very narrow vision + loud sound -> auto-turn
+        if cell.genome.vision_angle < 0.8:
+            for heard in senses['heard']:
+                if heard.get('actual_ref') and heard['noise'] > 2.0 and heard['actual_ref'].id not in seen_ids:
+                    cell.desired_angle = heard['angle']
+                    break
+
+        sense = cell.genome.vision_range  # backward compat for AI functions that still use 'sense'
+
         # Leader update
         cell.leader_id = best_leader.id if best_leader else None
 
-        # === TAUNT SYSTEM ===
+        # === VOCALIZATION SYSTEM (smart cost-benefit taunt) ===
         is_alpha = best_leader is None and cell.pack_mates > 0
 
-        # --- Taunt EMISSION (taunt_power gene determines activity) ---
+        # --- Vocalization EMISSION: cell decides whether to call ---
         tp = cell.genome.taunt_power
-        if cell.taunt_timer <= 0 and tp > 0.1 and not cell.is_child:
-            # Frequency based on gene strength: stronger gene = more frequent taunting
-            taunt_interval = max(20, int(80 - tp * 30))  # Between 20-77 ticks
+        taunt_interval = max(20, int(80 - tp * 30))
+        if cell.taunt_timer <= 0 and cell.age % taunt_interval == 0:
+            should_call, call_type, call_target = cell._vocalize_risk_benefit(allies, enemies, senses)
+            if should_call:
+                cell.emit_taunt(call_type, call_target)
 
-            # 1) MATE TAUNT: seeking mate and no one nearby
-            #    But don't waste energy calling if alone and hungry (no one to hear)
-            lonely_hungry = cell.genome.is_predator() and not allies and cell.ticks_without_food > 80
-            if cell.seeking_mate and not any(a.wants_to_mate() for a, _ in allies) and not lonely_hungry:
-                if cell.age % taunt_interval == 0:
-                    cell.emit_taunt('mate')
+        # --- Vocalization RECEPTION: reacting to nearby calls ---
+        # Process ALL nearby cells' vocalizations (allies + enemies)
+        all_vocalizing = []
+        for other, dist in (allies + enemies):
+            if other.taunt_timer <= 0 or other.taunt_type is None:
+                continue
+            wave_speed = 3.0 + other.genome.taunt_power * 3.0
+            if other.taunt_radius - wave_speed <= dist <= other.taunt_radius:
+                all_vocalizing.append((other, dist))
 
-            # 2) ATTACK TAUNT: alpha predator sends pack to target
-            elif is_alpha and cell.genome.is_predator() and cell.target_id is not None:
-                if cell.genome.aggression > 0.3 and cell.pack_mates >= 2:
-                    if cell.age % taunt_interval == 0:
-                        cell.emit_taunt('attack', cell.target_id)
+        for caller, dist in all_vocalizing:
+            is_ally = any(a.id == caller.id for a, _ in allies)
 
-            # 3) FLEE TAUNT: being attacked -> panic signal (immediate, doesn't wait for interval)
-            elif cell.being_attacked_by and cell.genome.social > 0.15:
-                cell.emit_taunt('flee')
+            # === ECHOLOCATION ECHO: scan wave bounces back to emitter ===
+            if caller.taunt_type == 'scan' and caller.id != cell.id:
+                # The SCANNER (caller) gets position info about us
+                # Store echo data on the scanner cell
+                if not hasattr(caller, '_echo_targets'):
+                    caller._echo_targets = {}
+                caller._echo_targets[cell.id] = (cell.x, cell.y, self.tick + 30)
 
-        # --- Taunt RECEPTION: reacting to nearby taunts ---
-        if allies and cell.genome.social > 0.15:
-            for ally, dist in allies:
-                if ally.taunt_timer <= 0:
-                    continue
-                # Wavefront: taunt only affects ONCE, when the edge passes over the cell
-                wave_speed = 3.0 + ally.genome.taunt_power * 3.0
-                if not (ally.taunt_radius - wave_speed <= dist <= ally.taunt_radius):
-                    continue
+            # === LURE: deceptive predator call tricks prey ===
+            if caller.taunt_type == 'lure' and not is_ally:
+                # Prey thinks it's a mate call from a friend
+                if not cell.genome.is_predator() and cell.genome.social > 0.2:
+                    # Night vision helps detect deception
+                    deception_resist = cell.genome.night_vision * 0.4 + cell.genome.bravery * 0.2
+                    if random.random() > deception_resist:
+                        # Fooled! Move toward the "friendly" call
+                        cell.steer_towards(caller.x, caller.y, 0.5)
+                        cell.ai_state = "Becsapva!"
+                continue  # Lure doesn't trigger ally reactions
 
-                if ally.taunt_type == 'mate':
-                    # Mating call -> if ready to mate, sprint toward caller
-                    if cell.wants_to_mate() and not cell.seeking_mate and abs(cell.genome.diet - ally.genome.diet) < 0.15:
+            # === ALLY RECEPTION ===
+            if is_ally and cell.genome.social > 0.15:
+                if caller.taunt_type == 'mate':
+                    # Same species OR genetically compatible cross-breed
+                    mate_ok = abs(cell.genome.diet - caller.genome.diet) < 0.15
+                    if not mate_ok:
+                        mate_ok = cell.genome.genetic_similarity(caller.genome) >= 0.80
+                    if cell.wants_to_mate() and not cell.seeking_mate and mate_ok:
                         cell.seeking_mate = True
-                        cell.mate_target_id = ally.id
+                        cell.mate_target_id = caller.id
                     if cell.seeking_mate:
-                        cell.steer_towards(ally.x, ally.y, 0.8)
+                        cell.steer_towards(caller.x, caller.y, 0.8)
                         if dist > 50 and cell.sprint_energy > 20 and cell.sprint_cooldown <= 0:
                             cell.sprinting = True
 
-                elif ally.taunt_type == 'attack' and ally.taunt_target_id is not None:
-                    # Alpha attack command -> take over target
+                elif caller.taunt_type == 'attack' and caller.taunt_target_id is not None:
                     if cell.genome.is_predator():
-                        cell.target_id = ally.taunt_target_id
-                        # Search: is the target nearby?
+                        cell.target_id = caller.taunt_target_id
                         for other, odist in enemies:
-                            if other.id == ally.taunt_target_id:
+                            if other.id == caller.taunt_target_id:
                                 cell.steer_towards(other.x, other.y, 0.9)
                                 if odist < sense * 0.4 and cell.sprint_energy > 15:
                                     cell.sprinting = True
                                 break
 
-                elif ally.taunt_type == 'flee':
-                    # Panic signal -> flee from danger direction, with zigzag
+                elif caller.taunt_type == 'flee':
                     if not cell.genome.is_predator():
-                        # Danger source is the position of attackers on the taunt emitter
-                        flee_from_x = ally.x
-                        flee_from_y = ally.y
-                        # If ally is being attacked, flee from what's attacking it
-                        if ally.being_attacked_by:
+                        flee_from_x, flee_from_y = caller.x, caller.y
+                        if caller.being_attacked_by:
                             for other, odist in enemies:
-                                if other.id in ally.being_attacked_by:
-                                    flee_from_x = other.x
-                                    flee_from_y = other.y
+                                if other.id in caller.being_attacked_by:
+                                    flee_from_x, flee_from_y = other.x, other.y
                                     break
                         cell.steer_away(flee_from_x, flee_from_y, 0.85)
                         if cell.sprint_energy > 15 and cell.sprint_cooldown <= 0:
                             cell.sprinting = True
-                        # Unique zigzag phase (not synchronized, harder to catch)
                         cell.flee_zigzag_phase += 0.3 + cell.id * 0.01
                         zigzag = math.sin(cell.flee_zigzag_phase) * 0.6
                         cell.desired_angle += zigzag
 
-        # --- Predator eavesdropping: enemy taunts attract hungry predator ---
-        if cell.genome.is_predator() and cell.ticks_without_food > 40:
-            for prey, dist in enemies:
-                if prey.taunt_timer <= 0 or prey.taunt_type is None:
-                    continue
-                # Wavefront: only when the edge passes
-                wave_speed = 3.0 + prey.genome.taunt_power * 3.0
-                if not (prey.taunt_radius - wave_speed <= dist <= prey.taunt_radius):
-                    continue
-                # Prey is making noise -> go there! Hungrier = stronger attraction
-                hunger_factor = min(1.0, cell.ticks_without_food / 200.0)
-                pull_thrust = 0.3 + hunger_factor * 0.5
-                cell.steer_towards(prey.x, prey.y, pull_thrust)
-                cell.target_id = prey.id
-                cell.decision_target_x = prey.x
-                cell.decision_target_y = prey.y
-                cell.decision_cooldown = 30
-                # Very hungry + close -> sprint
-                if cell.ticks_without_food > 120 and dist < sense * 0.5:
-                    if cell.sprint_energy > 15 and cell.sprint_cooldown <= 0:
-                        cell.sprinting = True
-                break  # React to nearest taunt
+            # === ENEMY EAVESDROPPING ===
+            if not is_ally:
+                if cell.genome.is_predator() and cell.ticks_without_food > 40:
+                    hunger_factor = min(1.0, cell.ticks_without_food / 200.0)
+                    pull_thrust = 0.3 + hunger_factor * 0.5
+                    cell.steer_towards(caller.x, caller.y, pull_thrust)
+                    cell.target_id = caller.id
+                    cell.decision_target_x = caller.x
+                    cell.decision_target_y = caller.y
+                    cell.decision_cooldown = 30
+                    if cell.ticks_without_food > 120 and dist < sense * 0.5:
+                        if cell.sprint_energy > 15 and cell.sprint_cooldown <= 0:
+                            cell.sprinting = True
 
         # --- Mate-seeking FIRST: if specific mate/scent found, takes over control ---
         mate_handled = False
@@ -2397,11 +3095,11 @@ class World:
         # Species-specific AI — ONLY if mate-seeking didn't take over
         if not mate_handled:
             if cell.genome.is_predator():
-                self._predator_ai(cell, allies, enemies)
+                self._predator_ai(cell, allies, enemies, senses)
             elif cell.genome.is_omnivore():
-                self._omnivore_ai(cell, allies, enemies)
+                self._omnivore_ai(cell, allies, enemies, senses)
             else:
-                self._herbivore_ai(cell, allies, enemies)
+                self._herbivore_ai(cell, allies, enemies, senses)
 
         # --- Social attraction: stronger toward leader ---
         if cell.genome.social > 0.15 and allies:
@@ -2456,7 +3154,7 @@ class World:
                 cell.vx += (avg_vx - cell.vx) * sync
                 cell.vy += (avg_vy - cell.vy) * sync
 
-    def _predator_ai(self, cell, allies, enemies):
+    def _predator_ai(self, cell, allies, enemies, senses=None):
         """Predator AI — realistic predator behavior.
 
         Phases:
@@ -2729,8 +3427,11 @@ class World:
                 prey_vel = math.sqrt(best_prey.vx ** 2 + best_prey.vy ** 2)
                 if prey_vel > 0.3:
                     intercept_time = min(prey_dist / max(prey_vel + 1, 1), 50)
-                    target_x = best_prey.x + best_prey.vx * intercept_time * 0.15
-                    target_y = best_prey.y + best_prey.vy * intercept_time * 0.15
+                    # Narrow vision = better target lock (continuous, not binary)
+                    # angle 0.5 -> accuracy 0.55, angle 1.5 -> 0.35, angle 4.0 -> 0.10
+                    accuracy = max(0.08, min(0.6, 0.7 - cell.genome.vision_angle * 0.15))
+                    target_x = best_prey.x + best_prey.vx * intercept_time * accuracy
+                    target_y = best_prey.y + best_prey.vy * intercept_time * accuracy
                 else:
                     target_x = best_prey.x
                     target_y = best_prey.y
@@ -2746,13 +3447,14 @@ class World:
                 if cell.sprint_energy > 15 and cell.sprint_cooldown <= 0:
                     cell.sprinting = True
 
-                # Interceptor up close too
+                # Interceptor up close — narrow vision = better tracking
+                strike_accuracy = max(0.1, min(0.5, 0.55 - cell.genome.vision_angle * 0.12))
                 prey_vel = math.sqrt(best_prey.vx ** 2 + best_prey.vy ** 2)
                 if prey_vel > 0.5 and prey_dist > cell.radius * 2:
                     my_speed = max(1, math.sqrt(cell.vx ** 2 + cell.vy ** 2))
                     t = min(prey_dist / max(my_speed + prey_vel, 1), 20)
-                    target_x = best_prey.x + best_prey.vx * t * 0.25
-                    target_y = best_prey.y + best_prey.vy * t * 0.25
+                    target_x = best_prey.x + best_prey.vx * t * strike_accuracy
+                    target_y = best_prey.y + best_prey.vy * t * strike_accuracy
                 else:
                     target_x = best_prey.x
                     target_y = best_prey.y
@@ -2880,6 +3582,77 @@ class World:
                 else:
                     cell.decision_cooldown = 0  # Arrived
 
+            # --- Hearing-based search: heard but not seen prey ---
+            if senses and hunger > 30:
+                best_heard = None
+                best_noise = 0
+                for heard in senses.get('heard', []):
+                    ref = heard.get('actual_ref')
+                    if ref is None or not ref.alive or ref.genome.is_predator():
+                        continue
+                    # Don't re-investigate what we can already see
+                    seen_ids = {o.id for o, _ in enemies}
+                    if ref.id in seen_ids:
+                        continue
+                    if heard['noise'] > best_noise:
+                        best_noise = heard['noise']
+                        best_heard = heard
+                if best_heard and best_noise > 0.8:
+                    target_x = cell.x + math.cos(best_heard['angle']) * best_heard['dist']
+                    target_y = cell.y + math.sin(best_heard['angle']) * best_heard['dist']
+                    cell.decision_target_x = target_x
+                    cell.decision_target_y = target_y
+                    cell.decision_cooldown = 25
+                    track_thrust = 0.35 if hunger < 150 else 0.55
+                    cell.steer_towards(target_x, target_y, track_thrust)
+                    cell.ai_state = "Hallgat"
+                    return
+
+            # --- Echolocation echo: use scan results for precise targeting ---
+            echo_targets = getattr(cell, '_echo_targets', {})
+            if echo_targets:
+                # Find freshest non-expired echo
+                best_echo = None
+                best_echo_dist = float('inf')
+                expired = []
+                for eid, (ex, ey, expire_tick) in echo_targets.items():
+                    if self.tick > expire_tick:
+                        expired.append(eid)
+                        continue
+                    dx = ex - cell.x
+                    dy = ey - cell.y
+                    d = math.sqrt(dx * dx + dy * dy)
+                    if d < best_echo_dist:
+                        best_echo = (ex, ey, eid)
+                        best_echo_dist = d
+                for eid in expired:
+                    del echo_targets[eid]
+                if best_echo:
+                    ex, ey, eid = best_echo
+                    cell.decision_target_x = ex
+                    cell.decision_target_y = ey
+                    cell.decision_cooldown = 20
+                    cell.steer_towards(ex, ey, 0.6 if hunger < 150 else 0.8)
+                    cell.ai_state = "Echolokáció"
+                    return
+
+            # --- Smell-based tracking: follow prey scent gradient ---
+            if senses and hunger > 40:
+                smelled = senses.get('smelled', {})
+                prey_scent = smelled.get(PheromoneMap.PREY_SCENT)
+                if prey_scent and prey_scent['intensity'] > 0.5:
+                    gx, gy = prey_scent['gx'], prey_scent['gy']
+                    if abs(gx) + abs(gy) > 0.1:
+                        target_x = cell.x + gx * 60
+                        target_y = cell.y + gy * 60
+                        cell.decision_target_x = target_x
+                        cell.decision_target_y = target_y
+                        cell.decision_cooldown = 30
+                        track_thrust = 0.3 if hunger < 150 else 0.5
+                        cell.steer_towards(target_x, target_y, track_thrust)
+                        cell.ai_state = "Szagol"
+                        return
+
             # --- Trail tracking: follow prey footprints! ---
             if hunger > 40:
                 best_trail_cell = None
@@ -2889,11 +3662,9 @@ class World:
                         continue
                     if other.genome.is_predator():
                         continue  # Only track prey trails
-                    # Check recent trail points (newest half only — old trails are stale)
                     trail = other.trail
                     if len(trail) < 3:
                         continue
-                    # Sample every 3rd point from the newest half for performance
                     start_idx = len(trail) // 2
                     for ti in range(start_idx, len(trail), 3):
                         tx, ty = trail[ti]
@@ -2902,10 +3673,8 @@ class World:
                         d = math.sqrt(dx * dx + dy * dy)
                         if d < best_trail_dist:
                             best_trail_dist = d
-                            # Follow toward the NEWEST point of this cell's trail (direction of travel)
                             best_trail_cell = other
                 if best_trail_cell and best_trail_cell.trail:
-                    # Follow toward the newest trail point (prey went that way!)
                     newest = best_trail_cell.trail[-1]
                     cell.decision_target_x = newest[0]
                     cell.decision_target_y = newest[1]
@@ -2916,7 +3685,12 @@ class World:
                     return
 
             # --- Corpse scent tracking (highest priority during patrol!) ---
-            cgx, cgy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.CORPSE_SCENT)
+            smelled_data = senses.get('smelled', {}) if senses else {}
+            corpse_scent = smelled_data.get(PheromoneMap.CORPSE_SCENT)
+            if corpse_scent:
+                cgx, cgy = corpse_scent['gx'], corpse_scent['gy']
+            else:
+                cgx, cgy = self.pheromones.read_gradient(cell.x, cell.y, PheromoneMap.CORPSE_SCENT)
             corpse_smell = abs(cgx) + abs(cgy)
             if corpse_smell > 0.1:
                 # Corpse scent -> go there quickly, free calories!
@@ -3041,7 +3815,7 @@ class World:
                 cell.desired_angle += random.gauss(0, 0.5)
             cell.ai_state = "Patrolling"
 
-    def _omnivore_ai(self, cell, allies, enemies):
+    def _omnivore_ai(self, cell, allies, enemies, senses=None):
         """Omnivore AI: eats plants and carrion, but doesn't hunt."""
         sense = cell.genome.sense_range
 
@@ -3176,7 +3950,7 @@ class World:
         cell.wander()
         cell.ai_state = "Wandering"
 
-    def _herbivore_ai(self, cell, allies, enemies):
+    def _herbivore_ai(self, cell, allies, enemies, senses=None):
         """Herbivore AI — realistic prey behavior.
 
         Flee phases:
@@ -3254,8 +4028,8 @@ class World:
         # === 2. PREDATOR NEARBY — visual detection (stealth system) ===
         danger = None
         danger_dist = sense + 1
-        # Detection threshold: prey's sensitivity (high defense -> more alert)
-        detect_threshold = max(0.15, 0.4 - cell.genome.defense * 0.03)
+        # Detection threshold: night_vision + defense make prey more alert
+        detect_threshold = max(0.10, 0.4 - cell.genome.defense * 0.03 - cell.genome.night_vision * 0.15)
 
         for other, dist in enemies:
             if other.genome.is_predator() and other.genome.attack > cell.genome.defense * 0.3:
@@ -3267,6 +4041,27 @@ class World:
                     danger = other
                     danger_dist = dist
 
+        # --- Hearing-based threat detection (heard predators outside vision cone) ---
+        if not danger and senses:
+            seen_ids = {o.id for o, _ in enemies}
+            for heard in senses.get('heard', []):
+                ref = heard.get('actual_ref')
+                if ref is None or not ref.alive or ref.id in seen_ids:
+                    continue
+                if not ref.genome.is_predator():
+                    continue
+                if heard['noise'] > 1.2 and heard['size_cat'] in ('medium', 'large'):
+                    # Heard a predator moving! Can't see it — alert and turn!
+                    cell.alert = True
+                    cell.alert_x = cell.x + math.cos(heard['angle']) * heard['dist']
+                    cell.alert_y = cell.y + math.sin(heard['angle']) * heard['dist']
+                    cell.desired_angle = heard['angle'] + math.pi  # Face away from sound
+                    cell.thrust = 0.7
+                    if cell.sprint_energy > 20:
+                        cell.sprinting = True
+                    cell.ai_state = "Hallotta!"
+                    return
+
         # Danger alert from allies
         if not danger and cell.alert and cell.genome.social > 0.3:
             cell.steer_away(cell.alert_x, cell.alert_y, 0.7)
@@ -3276,9 +4071,15 @@ class World:
             cell.ai_state = "Alert"
             return
 
-        if danger and danger_dist < sense * 0.8:
+        # Bravery gene shifts flee thresholds (brave = waits longer before fleeing)
+        brav = cell.genome.bravery
+        flee_outer = sense * (0.6 + brav * 0.4)   # brave=1: flee at 100%, coward=0: flee at 60%
+        flee_mid = sense * (0.2 + brav * 0.3)     # brave=1: 50%, coward=0: 20%
+        flee_panic = sense * (0.1 + brav * 0.15)  # brave=1: 25%, coward=0: 10%
+
+        if danger and danger_dist < flee_outer:
             # Flee strategy based on distance:
-            if danger_dist < sense * 0.2:
+            if danger_dist < flee_panic:
                 # VERY CLOSE — panic sprint + zigzag
                 cell.steer_away(danger.x, danger.y, 1.0)
                 if cell.sprint_energy > 10 and cell.sprint_cooldown <= 0:
@@ -3288,7 +4089,7 @@ class World:
                     zigzag = (1 if cell.age % 6 < 3 else -1) * cell.genome.maneuverability * 0.6
                     cell.desired_angle += zigzag
                 cell.ai_state = "Panic!"
-            elif danger_dist < sense * 0.4:
+            elif danger_dist < flee_mid:
                 # CLOSE — fast flee, shelter search
                 cell.steer_away(danger.x, danger.y, 0.9)
                 if cell.sprint_energy > 25 and cell.sprint_cooldown <= 0:
@@ -3326,10 +4127,11 @@ class World:
                         ally.alert_y = danger.y
                         ally.remember_danger(danger.x, danger.y)
 
-            # --- Herd protection: large herd -> braver ---
-            if cell.pack_mates >= 4 and cell.genome.social > 0.5:
-                if danger_dist > sense * 0.35:
-                    # Enough herd and far enough -> don't flee, keep eating
+            # --- Herd protection: large herd + bravery -> stands ground ---
+            herd_bravery_thresh = max(2, int(5 - brav * 3))  # brave=1: 2 allies enough, coward=0: need 5
+            if cell.pack_mates >= herd_bravery_thresh and cell.genome.social > 0.3:
+                if danger_dist > flee_panic:
+                    # Enough herd and brave enough -> don't flee, keep eating
                     cell.ai_state = "Herd defense"
                     self._seek_food_or_wander(cell)
                     return
@@ -3636,7 +4438,7 @@ class World:
                 # Digestion efficiency by type
                 if is_omni:
                     # Omnivore: worse at both — generalist penalty
-                    digest_eff = 0.65 if is_meat else 0.45
+                    digest_eff = 0.65 if is_meat else 0.55
                 elif is_pred:
                     if is_meat and corpse_tick > 0:
                         # Predator scavenging: old corpse = less nutritious (drives hunting)
@@ -3743,9 +4545,12 @@ class World:
                 # --- Damage calculation ---
                 damage = predator.damage_per_tick
 
-                # First bite bonus: ambush/surprise attack deals 3x damage
+                # First bite bonus: ambush/surprise attack
+                # Narrow vision predators hit harder (focused strike)
+                # angle 0.5 -> 4.5x, angle 1.5 -> 3.5x, angle 4.0 -> 2.0x
                 if not prey.being_attacked_by:
-                    damage *= 3.0
+                    focus_mult = max(2.0, min(5.0, 5.0 - predator.genome.vision_angle * 0.75))
+                    damage *= focus_mult
 
                 # Pack hunting bonus: coordinated attacks are more effective
                 pack_attackers = sum(1 for c in self.cells
@@ -3754,15 +4559,20 @@ class World:
                 if pack_attackers >= 2:
                     damage *= 1.0 + pack_attackers * 0.25  # 2 = 1.5x, 3 = 1.75x, 4 = 2x
 
-                # Herd defense bonus: defense aura from tanks
+                # Herd defense bonus: defense aura from tanks (horned allies amplify this)
                 herd_defense = 0
                 nearby_herbs = self.cell_grid.query(prey.x, prey.y, 50)
+                herd_allies = []
                 for ally in nearby_herbs:
                     if ally.id != prey.id and ally.alive and not ally.genome.is_predator():
+                        herd_allies.append(ally)
                         # Tanks (large + defense) give defense aura
                         if ally.current_size > 12 and ally.genome.defense > 3:
                             herd_defense += ally.genome.defense * 0.2
-                herd_defense = min(herd_defense, 4.0)
+                        # Horned allies add extra intimidation
+                        if ally.genome.horn_size > 1.0:
+                            herd_defense += ally.genome.horn_size * 0.15
+                herd_defense = min(herd_defense, 5.0)
 
                 # Prey defense: percentage reduction (not flat subtraction)
                 defense = prey.genome.defense + herd_defense
@@ -3774,6 +4584,81 @@ class World:
                 prey.damaged_flash = 8
                 prey.being_attacked_by.append(predator.id)
                 predator.energy -= predator.current_size * 0.005  # More realistic combat fatigue
+
+                # === HORN PASSIVE DAMAGE: thorns/horns hurt the attacker ===
+                horn = prey.genome.horn_size
+                if horn > 0.5:
+                    # Attacker takes damage proportional to horn size and prey defense
+                    horn_damage = horn * (1.0 + prey.genome.defense * 0.08) * 0.3
+                    # Larger prey = more powerful horns
+                    horn_damage *= prey.current_size / 10.0
+                    predator.hp -= horn_damage
+                    predator.damaged_flash = max(predator.damaged_flash, 4)
+                    # Horn stab can stun predator briefly
+                    if horn > 3.0 and random.random() < 0.15:
+                        predator.stun_ticks = max(predator.stun_ticks, 8)
+
+                # === DEFENSIVE KICK: high defense prey counterattacks ===
+                if prey.genome.defense > 3.0 and not prey.stun_ticks:
+                    # Chance scales with defense (def 5 = 20%, def 10 = 45%, def 15 = 60%)
+                    kick_chance = min(0.6, prey.genome.defense * 0.04)
+                    if random.random() < kick_chance:
+                        kick_damage = prey.genome.defense * 0.25 * (prey.current_size / 10.0)
+                        predator.hp -= kick_damage
+                        predator.damaged_flash = max(predator.damaged_flash, 5)
+                        # Kick knockback — strong kick pushes predator away
+                        if dist > 0.1:
+                            kick_force = 2.0 + prey.genome.defense * 0.3
+                            predator.vx -= (dx / dist) * kick_force
+                            predator.vy -= (dy / dist) * kick_force
+                        # Heavy kick can briefly stun
+                        if prey.genome.defense > 8 and random.random() < 0.2:
+                            predator.stun_ticks = max(predator.stun_ticks, 5)
+
+                # === MATERNAL AGGRESSION: parent defends offspring ===
+                for ally in herd_allies:
+                    # Check if the prey being attacked is this ally's child
+                    if prey.parent_id == ally.id or prey.parent2_id == ally.id:
+                        if ally.genome.social > 0.2:
+                            # Enraged parent attacks the predator!
+                            maternal_damage = (ally.genome.defense * 0.3 + ally.genome.horn_size * 0.4)
+                            maternal_damage *= ally.current_size / 10.0
+                            if maternal_damage > 0.1:
+                                predator.hp -= maternal_damage
+                                predator.damaged_flash = max(predator.damaged_flash, 6)
+                                # Parent charges at predator
+                                ally.steer_towards(predator.x, predator.y, 0.9)
+                                ally.ai_state = "Anyai düh!"
+                                ally.thrust = 1.0
+
+                # === HERD MOBBING: large group retaliates ===
+                if len(herd_allies) >= 4:
+                    # Count combat-capable allies (not children, decent size)
+                    mob_allies = [a for a in herd_allies
+                                  if not a.is_child and a.current_size > 6
+                                  and a.genome.social > 0.3]
+                    if len(mob_allies) >= 3:
+                        # Mob strength: each ally contributes damage
+                        mob_damage = 0
+                        for mobber in mob_allies[:6]:  # Max 6 mobbers
+                            contribution = (mobber.genome.defense * 0.15
+                                            + mobber.genome.horn_size * 0.25)
+                            contribution *= mobber.current_size / 12.0
+                            mob_damage += contribution
+                            # Mobbers orient towards predator
+                            mobber.steer_towards(predator.x, predator.y, 0.6)
+                            mobber.ai_state = "Csorda véd!"
+                            mobber.thrust = 0.8
+                        predator.hp -= mob_damage
+                        predator.damaged_flash = max(predator.damaged_flash, 8)
+                        # Mobbing stuns predator (overwhelmed)
+                        if len(mob_allies) >= 5 and random.random() < 0.3:
+                            predator.stun_ticks = max(predator.stun_ticks, 12)
+                        # Predator knockback from mob
+                        if dist > 0.1:
+                            mob_force = len(mob_allies) * 0.8
+                            predator.vx -= (dx / dist) * mob_force
+                            predator.vy -= (dy / dist) * mob_force
 
                 # Bite shock: strong attack -> stun, weaker -> slow
                 bite_force = actual_damage / max(prey.max_hp, 1)  # 0-1 ratio
@@ -3792,6 +4677,17 @@ class World:
                         predator.vx -= (dx / dist) * knockback
                         predator.vy -= (dy / dist) * knockback
 
+                # --- Check if predator died from retaliation ---
+                if predator.hp <= 0:
+                    predator.alive = False
+                    self.stats["total_died"] += 1
+                    if predator.id in self.lineage:
+                        self.lineage[predator.id]['died_tick'] = self.tick
+                    # Predator becomes carcass too
+                    corpse_energy = predator.energy * 0.4 + predator.genome.size ** 2 * 0.8
+                    self.food.append((predator.x, predator.y, max(10, corpse_energy), True, self.tick))
+                    break
+
                 # --- Death: prey HP depleted -> CARCASS forms ---
                 if prey.hp <= 0:
                     prey.alive = False
@@ -3801,6 +4697,9 @@ class World:
                     predator.chase_target_id = None
                     predator.rest_after_hunt = 0  # Successful hunt -> DON'T rest, eat!
                     self.stats["total_died"] += 1
+                    # Record death in lineage
+                    if prey.id in self.lineage:
+                        self.lineage[prey.id]['died_tick'] = self.tick
 
                     # Instant energy bonus (blood/organs — calorie-dense fresh meat)
                     instant_bonus = prey.genome.size * 3.0 + prey.energy * 0.3 + 10.0
@@ -3940,20 +4839,19 @@ class Renderer:
         p_surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
         for row_i in range(row_min, row_max + 1):
             for col_i in range(col_min, col_max + 1):
-                cell_data = pm.grid[row_i][col_i]
-                if not cell_data:
+                cell_vals = pm.data[row_i, col_i]
+                total = cell_vals.sum()
+                if total < 0.3:
                     continue
                 wx = col_i * gs + gs // 2
                 wy = row_i * gs + gs // 2
                 sx, sy = self.world_to_screen(wx, wy)
-                # Collect values
-                danger = cell_data.get(PheromoneMap.DANGER, 0)
-                trail = cell_data.get(PheromoneMap.TRAIL, 0)
-                food_p = cell_data.get(PheromoneMap.FOOD_HERE, 0)
-                mate_p = cell_data.get(PheromoneMap.MATE, 0)
-                prey_p = cell_data.get(PheromoneMap.PREY_SCENT, 0)
-                corpse_p = cell_data.get(PheromoneMap.CORPSE_SCENT, 0)
-                total = danger + trail + food_p + mate_p + prey_p + corpse_p
+                danger = float(cell_vals[PheromoneMap.DANGER])
+                trail = float(cell_vals[PheromoneMap.TRAIL])
+                food_p = float(cell_vals[PheromoneMap.FOOD_HERE])
+                mate_p = float(cell_vals[PheromoneMap.MATE])
+                prey_p = float(cell_vals[PheromoneMap.PREY_SCENT])
+                corpse_p = float(cell_vals[PheromoneMap.CORPSE_SCENT])
                 if total > 0.3:
                     pr = min(80, int(danger * 25 + mate_p * 20 + prey_p * 12 + corpse_p * 10))
                     pg = min(50, int(food_p * 20 + mate_p * 8 + corpse_p * 6))
@@ -4181,14 +5079,43 @@ class Renderer:
                     imm_r = r + max(1, int(2 * self.zoom))
                     pygame.draw.circle(self.screen, (60, 120, 200), (sx, sy), imm_r, max(1, int(self.zoom)))
 
-                # Sense range + pheromone display (for selected cell)
+                # Tri-sense overlay (for selected cell)
                 if self.selected_cell and self.selected_cell.id == cell.id:
-                    sense_r = int(cell.genome.sense_range * self.zoom)
-                    if sense_r > 2:
-                        sense_surf = pygame.Surface((sense_r * 2, sense_r * 2), pygame.SRCALPHA)
-                        pygame.draw.circle(sense_surf, (*color, 20), (sense_r, sense_r), sense_r)
-                        pygame.draw.circle(sense_surf, (*color, 35), (sense_r, sense_r), sense_r, 1)
-                        self.screen.blit(sense_surf, (sx - sense_r, sy - sense_r))
+                    genome = cell.genome
+                    # --- Vision cone (blue) ---
+                    vis_r = int(genome.vision_range * self.zoom)
+                    if vis_r > 2:
+                        half_angle = genome.vision_angle / 2
+                        cone_pts = [(sx, sy)]
+                        for step in range(17):
+                            a = cell.angle - half_angle + genome.vision_angle * step / 16
+                            cone_pts.append((
+                                sx + int(math.cos(a) * vis_r),
+                                sy + int(math.sin(a) * vis_r)))
+                        if len(cone_pts) >= 3:
+                            cone_surf = pygame.Surface((self.screen_w, self.screen_h), pygame.SRCALPHA)
+                            pygame.draw.polygon(cone_surf, (40, 100, 220, 25), cone_pts)
+                            pygame.draw.polygon(cone_surf, (60, 130, 255, 80), cone_pts, 1)
+                            self.screen.blit(cone_surf, (0, 0))
+
+                    # --- Hearing radius (orange dashed circle) ---
+                    hear_r = int(genome.hearing_range * self.zoom)
+                    if hear_r > 2:
+                        for a_deg in range(0, 360, 6):
+                            a1 = math.radians(a_deg)
+                            a2 = math.radians(a_deg + 3)
+                            p1 = (sx + int(math.cos(a1) * hear_r), sy + int(math.sin(a1) * hear_r))
+                            p2 = (sx + int(math.cos(a2) * hear_r), sy + int(math.sin(a2) * hear_r))
+                            pygame.draw.line(self.screen, (220, 140, 40, 60), p1, p2, 1)
+
+                    # --- Smell radius (green dotted circle) ---
+                    smell_r = int(genome.smell_range * PHEROMONE_GRID_SIZE * self.zoom)
+                    if smell_r > 2:
+                        for a_deg in range(0, 360, 10):
+                            a1 = math.radians(a_deg)
+                            px = sx + int(math.cos(a1) * smell_r)
+                            py_dot = sy + int(math.sin(a1) * smell_r)
+                            pygame.draw.circle(self.screen, (60, 200, 80, 80), (px, py_dot), max(1, int(self.zoom)))
 
                     # Pheromone heatmap highlight around cell
                     self._draw_selected_pheromones(world, cell)
@@ -4212,6 +5139,26 @@ class Renderer:
                     cilia_color = tuple(min(255, c + 80) for c in color)
                     pygame.draw.line(self.screen, cilia_color, (cx1, cy1), (cx2, cy2),
                                      max(1, int(self.zoom)))
+
+                # --- Draw horns/tusks ---
+                horn = cell.genome.horn_size
+                if horn > 0.3 and r > 3:
+                    horn_len = max(2, int((horn * 2.5 + 2) * self.zoom))
+                    horn_w = max(1, int(self.zoom * (1 + horn * 0.3)))
+                    # Horn color: bone white to ivory yellow
+                    horn_brightness = min(255, 200 + int(horn * 10))
+                    horn_color = (horn_brightness, horn_brightness - 20, horn_brightness - 60)
+                    # Two horns symmetrically around facing direction
+                    for side in (-0.35, 0.35):
+                        h_angle = cell.angle + side
+                        hx1 = sx + int(math.cos(h_angle) * r * 0.8)
+                        hy1 = sy + int(math.sin(h_angle) * r * 0.8)
+                        hx2 = hx1 + int(math.cos(h_angle) * horn_len)
+                        hy2 = hy1 + int(math.sin(h_angle) * horn_len)
+                        pygame.draw.line(self.screen, horn_color, (hx1, hy1), (hx2, hy2), horn_w)
+                        # Horn tip (small dot)
+                        if horn > 2.0:
+                            pygame.draw.circle(self.screen, (255, 240, 200), (hx2, hy2), max(1, horn_w))
 
                 # Cell body — stealthy predators are fainter
                 if cell.genome.is_predator() and cell.thrust < 0.35 and not cell.sprinting:
@@ -4326,6 +5273,33 @@ class Renderer:
                             warn = self.font_medium.render("!!", True, (255, 220, 50))
                             self.screen.blit(warn, (sx - 6, sy - r - 18))
 
+                    elif cell.taunt_type == 'scan':
+                        # Cyan echolocation pulse
+                        if wave_r > 2:
+                            t_surf = pygame.Surface((wave_r * 2, wave_r * 2), pygame.SRCALPHA)
+                            pygame.draw.circle(t_surf, (40, 220, 255, t_alpha),
+                                             (wave_r, wave_r), wave_r, line_w)
+                            # Second inner ring for sonar effect
+                            inner_r = max(1, wave_r - int(8 * self.zoom))
+                            if inner_r > 2:
+                                pygame.draw.circle(t_surf, (40, 220, 255, t_alpha // 2),
+                                                 (wave_r, wave_r), inner_r, max(1, line_w - 1))
+                            self.screen.blit(t_surf, (sx - wave_r, sy - wave_r))
+                        if r > 3:
+                            sonar = self.font_small.render("◎", True, (40, 220, 255))
+                            self.screen.blit(sonar, (sx - 5, sy - r - 14))
+
+                    elif cell.taunt_type == 'lure':
+                        # Purple deceptive call (mimics pink mate call but with purple tint)
+                        if wave_r > 2:
+                            t_surf = pygame.Surface((wave_r * 2, wave_r * 2), pygame.SRCALPHA)
+                            pygame.draw.circle(t_surf, (180, 60, 255, t_alpha),
+                                             (wave_r, wave_r), wave_r, line_w)
+                            self.screen.blit(t_surf, (sx - wave_r, sy - wave_r))
+                        if r > 3:
+                            lure = self.font_small.render("♪", True, (180, 60, 255))
+                            self.screen.blit(lure, (sx - 4, sy - r - 14))
+
                 # HP bar (top, red)
                 if r > 4:
                     bar_w = r * 2
@@ -4348,7 +5322,7 @@ class Renderer:
 
         # Selected cell info
         if self.selected_cell and self.selected_cell.alive:
-            self._draw_cell_info(self.selected_cell)
+            self._draw_cell_info(self.selected_cell, world)
 
         # HUD
         self._draw_hud(world, paused, sim_speed)
@@ -4436,7 +5410,7 @@ class Renderer:
         bot_surf.fill((0, 0, 0, 140))
         self.screen.blit(bot_surf, (0, bot_y))
 
-        controls = "SPACE: Szünet | W/S: Sebesség | C: Akció Kamera | T: Nyomok | H: Fejnélküli | Ctrl+S/L: Mentés/Betöltés | 1/2/3: Spawn | F: Kaja | M: Beállítások | R: Reset"
+        controls = "SPACE: Szünet | W/S: Sebesség | C: Akció Kamera | T: Nyomok | H: Fejnélküli | Ctrl+S/L: Mentés/Betöltés | 1/2/3: Spawn | F: Kaja | M: Beállítások | R: Reset | F5-F8: Képernyők"
         ct = self.font_small.render(controls, True, (140, 140, 160))
         self.screen.blit(ct, (10, bot_y + 5))
 
@@ -4683,8 +5657,8 @@ class Renderer:
         p_surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
         for row_i in range(row_min, row_max + 1):
             for col_i in range(col_min, col_max + 1):
-                cell_data = pm.grid[row_i][col_i]
-                if not cell_data:
+                cell_vals = pm.data[row_i, col_i]
+                if cell_vals.sum() < 0.1:
                     continue
                 wx = col_i * gs + gs // 2
                 wy = row_i * gs + gs // 2
@@ -4693,7 +5667,7 @@ class Renderer:
                     # Select strongest pheromone (1 surface/grid -> 7x fewer blits)
                     best_val = 0
                     best_col = (100, 100, 100)
-                    for ptype, col in [
+                    _ptype_colors = [
                         (PheromoneMap.DANGER, (255, 50, 30)),
                         (PheromoneMap.TRAIL, (60, 120, 255)),
                         (PheromoneMap.FOOD_HERE, (50, 220, 50)),
@@ -4701,8 +5675,9 @@ class Renderer:
                         (PheromoneMap.PREY_SCENT, (255, 160, 40)),
                         (PheromoneMap.AMBUSH, (200, 200, 50)),
                         (PheromoneMap.CORPSE_SCENT, (160, 100, 40)),
-                    ]:
-                        v = cell_data.get(ptype, 0)
+                    ]
+                    for ptype, col in _ptype_colors:
+                        v = float(cell_vals[ptype])
                         if v > best_val:
                             best_val = v
                             best_col = col
@@ -4712,8 +5687,34 @@ class Renderer:
                         pygame.draw.circle(p_surf, (*best_col, alpha), (r, r), r)
                         self.screen.blit(p_surf, (sx - r, sy - r))
 
-    def _draw_cell_info(self, cell):
-        pw, ph = 270, 450
+    def _find_cell_species_name(self, cell, world):
+        """Find the Latin species name for a cell from cached species data."""
+        # Use fast lookup map (rebuilt when species change)
+        lookup = self._get_species_lookup(world)
+        return lookup.get(cell.id, ('', 0))[0]
+
+    def _find_cell_species_idx(self, cell, world):
+        """Find the species index for a cell from cached species data."""
+        lookup = self._get_species_lookup(world)
+        return lookup.get(cell.id, ('', 0))[1]
+
+    def _get_species_lookup(self, world):
+        """Build/cache a cell_id -> (species_name, species_idx) lookup dict."""
+        species = getattr(world, '_cached_species', [])
+        cache_key = id(species)
+        if getattr(self, '_species_lookup_key', None) == cache_key:
+            return self._species_lookup
+        lookup = {}
+        for i, sp in enumerate(species):
+            name = sp.get('name', '')
+            for m in sp.get('members', []):
+                lookup[m.id] = (name, i)
+        self._species_lookup = lookup
+        self._species_lookup_key = cache_key
+        return lookup
+
+    def _draw_cell_info(self, cell, world=None):
+        pw, ph = 270, 470
         px = 10
         py = 40
 
@@ -4730,7 +5731,13 @@ class Renderer:
             kind += " [HIBERNÁL]"
         title = self.font_medium.render(f"Sejt #{cell.id} ({kind})", True, color)
         self.screen.blit(title, (px + 10, y))
-        y += 20
+        y += 18
+        # Latin species name
+        latin_name = self._find_cell_species_name(cell, world) if world else ''
+        if latin_name:
+            latin_txt = self.font_small.render(f"\u2727 {latin_name}", True, (180, 200, 140))
+            self.screen.blit(latin_txt, (px + 10, y))
+        y += 16
 
         # Cilia type description
         n = cell.genome.num_cilia
@@ -4760,13 +5767,18 @@ class Renderer:
             f"  Maneuver: {cell.genome.maneuverability:.0%}",
             "",
             f"Size: {cell.current_size:.1f} (max:{cell.genome.size:.1f})",
-            f"Sense range: {cell.genome.sense_range:.0f}",
-            f"Attack: {cell.genome.attack:.1f}  Defense: {cell.genome.defense:.1f}",
+            f"--- Senses ---",
+            f"  Vision: {cell.genome.vision_range:.0f}px / {math.degrees(cell.genome.vision_angle):.0f}\u00b0",
+            f"  Hearing: {cell.genome.hearing_range:.0f}px",
+            f"  Smell: {cell.genome.smell_range} cells (sens:{cell.genome.smell_sensitivity:.2f})",
+            f"Atk: {cell.genome.attack:.1f}  Def: {cell.genome.defense:.1f}  Horn: {cell.genome.horn_size:.1f}  Brv: {cell.genome.bravery:.2f}",
             f"Metabolism: {cell.genome.metabolism:.2f}",
             f"Diet: {cell.genome.diet:.2f}",
             f"Aggression: {cell.genome.aggression:.2f}  Social: {cell.genome.social:.2f}",
             f"Taunt: {cell.genome.taunt_power:.2f}  Stealth: {cell.genome.stealth:.2f}",
-            f"Litter: {cell.genome.litter_size}  Sprint: {cell.sprint_energy:.0f}% {'ACTIVE' if cell.sprinting else 'ready' if cell.sprint_cooldown <= 0 else f'cooldown:{cell.sprint_cooldown}'}",
+            f"Litter: {cell.genome.litter_size}  Sprint: {cell.sprint_energy:.0f}% (pwr:{cell.genome.sprint_power:.1f} end:{cell.genome.endurance:.1f}) {'ACTIVE' if cell.sprinting else 'ready' if cell.sprint_cooldown <= 0 else f'cd:{cell.sprint_cooldown}'}",
+            f"Longevity: {cell.genome.longevity:.1f}x  Regen: {cell.genome.regeneration:.1f}x  Memory: {cell.genome.memory_capacity}  Fertility: {cell.genome.fertility:.1f}x",
+            f"Camo: {cell.genome.camouflage:.2f}  NightVis: {cell.genome.night_vision:.2f}  Growth: {cell.genome.maturity_rate:.1f}x",
             f"Allies: {cell.pack_mates}  Leader: {'ALPHA' if cell.leader_id is None and cell.pack_mates > 0 else f'#{cell.leader_id}' if cell.leader_id else '-'}  ({cell.leadership:.1f}pt)",
             f"Starvation: {cell.ticks_without_food} tick" + (" | MIGRATING" if cell.migrating else "") + (" | AMBUSH" if cell.ambushing else "") + (" | HIDING" if cell.hiding and not cell.ambushing else ""),
         ]
@@ -4913,6 +5925,18 @@ class Renderer:
                 label = "MATING CALL"
                 best_zoom = 1.5
 
+            # Echolocation scan
+            elif cell.taunt_type == 'scan':
+                score = 4
+                label = "ECHOLOCATION"
+                best_zoom = 1.3
+
+            # Deceptive lure
+            elif cell.taunt_type == 'lure':
+                score = 5
+                label = "DECEPTIVE LURE"
+                best_zoom = 1.3
+
             # Hibernation wake-up
             elif not cell.hibernating and cell.has_hibernated and cell.sprinting and cell.age < 10:
                 score = 4
@@ -5005,11 +6029,35 @@ class Renderer:
 
         self.screen.blit(mm_surf, (mx, my))
 
+        # Store minimap rect for click detection
+        self._minimap_rect = pygame.Rect(mx, my, mm_w, mm_h)
+        self._minimap_scale = (scale_x, scale_y)
+
         # Action label
         if self.action_label:
             label_surf = self.font_medium.render(
                 f"ACTION CAM: {self.action_label}", True, (255, 200, 80))
             self.screen.blit(label_surf, (mx, my + mm_h + 4))
+
+    def minimap_click(self, mouse_pos, world):
+        """Handle click on minimap — teleport camera to clicked world position.
+        Returns True if click was inside minimap."""
+        mm_rect = getattr(self, '_minimap_rect', None)
+        if mm_rect is None or not mm_rect.collidepoint(mouse_pos):
+            return False
+        sx, sy = self._minimap_scale
+        # Convert click position to world coordinates
+        rel_x = mouse_pos[0] - mm_rect.x
+        rel_y = mouse_pos[1] - mm_rect.y
+        world_x = rel_x / sx
+        world_y = rel_y / sy
+        # Center camera on clicked point
+        self.cam_x = world_x - (self.screen_w / self.zoom) / 2
+        self.cam_y = world_y - (self.screen_h / self.zoom) / 2
+        # Clamp
+        self.cam_x = max(0, min(world.width - self.screen_w / self.zoom, self.cam_x))
+        self.cam_y = max(0, min(world.height - self.screen_h / self.zoom, self.cam_y))
+        return True
 
     def _draw_action_cell_info(self, world):
         """Draw tracked cell stats + AI state during action camera."""
@@ -5131,6 +6179,592 @@ class Renderer:
 
         self.selected_cell = best
 
+    # --- Tab Bar & Screen Navigation ---
+
+    TAB_NAMES = ["Szimuláció (F5)", "Fajok (F6)", "Agy (F7)", "Leszármazás (F8)"]
+    TAB_HEIGHT = 32
+
+    def draw_tab_bar(self, current_screen):
+        """Draw navigation tab bar at top of screen."""
+        bar_surf = pygame.Surface((self.screen_w, self.TAB_HEIGHT), pygame.SRCALPHA)
+        bar_surf.fill((15, 18, 25, 220))
+        self.screen.blit(bar_surf, (0, 0))
+        tab_w = self.screen_w // len(self.TAB_NAMES)
+        self._tab_rects = []
+        for i, name in enumerate(self.TAB_NAMES):
+            rx = i * tab_w
+            rect = pygame.Rect(rx, 0, tab_w, self.TAB_HEIGHT)
+            self._tab_rects.append(rect)
+            if i == current_screen:
+                pygame.draw.rect(self.screen, (50, 120, 200), rect)
+            color = (255, 255, 255) if i == current_screen else (140, 145, 160)
+            txt = self.font_small.render(name, True, color)
+            self.screen.blit(txt, (rx + (tab_w - txt.get_width()) // 2,
+                                   (self.TAB_HEIGHT - txt.get_height()) // 2))
+            if i > 0:
+                pygame.draw.line(self.screen, (60, 65, 80), (rx, 2), (rx, self.TAB_HEIGHT - 2))
+
+    def tab_click(self, pos):
+        """Check if a tab was clicked. Returns tab index or -1."""
+        mx, my = pos
+        if my > self.TAB_HEIGHT:
+            return -1
+        for i, rect in enumerate(getattr(self, '_tab_rects', [])):
+            if rect.collidepoint(mx, my):
+                return i
+        return -1
+
+    def draw_species_screen(self, world, screen_data):
+        """Species list screen — stub, filled in Phase D."""
+        self.screen.fill((10, 14, 22))
+        title = self.font_large.render("Fajok", True, (200, 210, 230))
+        self.screen.blit(title, (self.screen_w // 2 - title.get_width() // 2, 60))
+        species = getattr(world, '_cached_species', [])
+        if not species:
+            hint = self.font_medium.render("Nincs faj adat (klaszterezés folyamatban...)", True, (120, 125, 140))
+            self.screen.blit(hint, (self.screen_w // 2 - hint.get_width() // 2, 120))
+            return
+        # Species list rendering
+        py = 100
+        screen_data['_species_rects'] = []
+        for i, sp in enumerate(species):
+            sel = (i == screen_data.get('selected_species_idx', 0))
+            rect = pygame.Rect(40, py, self.screen_w // 3 - 60, 36)
+            screen_data['_species_rects'].append((rect, i))
+            bg_col = (30, 50, 80) if sel else (20, 25, 35)
+            pygame.draw.rect(self.screen, bg_col, rect, border_radius=4)
+            # Color dot
+            avg_diet = sp.get('avg_diet', 0.5)
+            dot_col = (80, 200, 80) if avg_diet <= 0.3 else (220, 160, 50) if avg_diet <= 0.7 else (220, 70, 70)
+            pygame.draw.circle(self.screen, dot_col, (rect.x + 14, rect.centery), 6)
+            # Name and count
+            name_txt = self.font_medium.render(
+                f"{sp.get('name', '?')}  ({sp.get('count', 0)} sejt, gen {sp.get('avg_gen', 0):.0f})",
+                True, (210, 215, 230) if sel else (160, 165, 180))
+            self.screen.blit(name_txt, (rect.x + 28, rect.y + 8))
+            py += 42
+        # Right panel: selected species detail
+        sel_idx = screen_data.get('selected_species_idx', 0)
+        if 0 <= sel_idx < len(species):
+            sp = species[sel_idx]
+            rx = self.screen_w // 3 + 20
+            ry = 100
+            self._draw_species_detail(sp, rx, ry)
+
+    def _draw_species_detail(self, sp, rx, ry):
+        """Draw detail panel for a species on the species screen."""
+        # Name
+        name = self.font_large.render(sp.get('name', '?'), True, (230, 235, 245))
+        self.screen.blit(name, (rx, ry))
+        ry += 40
+        # Stats
+        stats_lines = [
+            f"Létszám: {sp.get('count', 0)}   Generáció: {sp.get('avg_gen', 0):.1f}",
+            f"Méret: {sp.get('avg_size', 0):.1f}   Sebesség: {sp.get('avg_speed', 0):.1f}",
+            f"Támadás: {sp.get('avg_attack', 0):.1f}   Védelem: {sp.get('avg_defense', 0):.1f}   Szarv: {sp.get('avg_horn', 0):.1f}",
+            f"Látás: {sp.get('avg_vision_range', 0):.0f}px / {math.degrees(sp.get('avg_vision_angle', 2.0)):.0f}°",
+            f"Hallás: {sp.get('avg_hearing', 0):.0f}px   Szaglás: {sp.get('avg_smell', 0):.0f} cella",
+            f"Sprint: {sp.get('avg_sprint', 0):.1f}   Állóképesség: {sp.get('avg_endurance', 0):.1f}",
+            f"Élettartam: {sp.get('avg_longevity', 0):.1f}x   Regeneráció: {sp.get('avg_regen', 0):.1f}x",
+            f"Memória: {sp.get('avg_memory', 0):.0f}   Növekedés: {sp.get('avg_maturity', 0):.1f}x",
+            f"Bátorság: {sp.get('avg_bravery', 0):.2f}   Álca: {sp.get('avg_camouflage', 0):.2f}",
+            f"Termékenység: {sp.get('avg_fertility', 0):.1f}x   Éjjellátás: {sp.get('avg_night_vision', 0):.2f}",
+        ]
+        for line in stats_lines:
+            txt = self.font_medium.render(line, True, (170, 175, 190))
+            self.screen.blit(txt, (rx, ry))
+            ry += 22
+        # Radar chart
+        ry += 10
+        self._draw_radar_chart(sp, rx + 140, ry + 140, 120)
+
+    def _draw_radar_chart(self, sp, cx, cy, radius):
+        """Draw a radar/spider chart of species genome averages."""
+        axes = [
+            ('Méret', sp.get('avg_size', 5) / 25),
+            ('Támadás', sp.get('avg_attack', 0) / 15),
+            ('Védelem', sp.get('avg_defense', 0) / 15),
+            ('Sebesség', sp.get('avg_speed', 0) / 8),
+            ('Szarv', sp.get('avg_horn', 0) / 5),
+            ('Sprint', sp.get('avg_sprint', 0) / 2.5),
+            ('Állóképesség', sp.get('avg_endurance', 0) / 2),
+            ('Bátorság', sp.get('avg_bravery', 0)),
+            ('Látás', sp.get('avg_vision_range', 100) / 350),
+            ('Hallás', sp.get('avg_hearing', 100) / 400),
+            ('Szaglás', sp.get('avg_smell', 3) / 10),
+            ('Éjjellátás', sp.get('avg_night_vision', 0)),
+            ('Lopakodás', sp.get('avg_stealth', 0)),
+            ('Álca', sp.get('avg_camouflage', 0)),
+            ('Élettartam', sp.get('avg_longevity', 1) / 3),
+            ('Termékenység', sp.get('avg_fertility', 1) / 2),
+        ]
+        n = len(axes)
+        points = []
+        label_points = []
+        for i, (label, val) in enumerate(axes):
+            angle = 2 * math.pi * i / n - math.pi / 2
+            val = max(0, min(1, val))
+            px = cx + math.cos(angle) * radius * val
+            py = cy + math.sin(angle) * radius * val
+            points.append((px, py))
+            lx = cx + math.cos(angle) * (radius + 18)
+            ly = cy + math.sin(angle) * (radius + 18)
+            label_points.append((lx, ly, label))
+        # Axis lines
+        for i in range(n):
+            angle = 2 * math.pi * i / n - math.pi / 2
+            ex = cx + math.cos(angle) * radius
+            ey = cy + math.sin(angle) * radius
+            pygame.draw.line(self.screen, (40, 45, 60), (cx, cy), (int(ex), int(ey)), 1)
+        # Filled polygon
+        if len(points) >= 3:
+            surf = pygame.Surface((self.screen_w, self.screen_h), pygame.SRCALPHA)
+            pygame.draw.polygon(surf, (60, 140, 220, 60), [(int(p[0]), int(p[1])) for p in points])
+            pygame.draw.polygon(surf, (80, 160, 240, 180), [(int(p[0]), int(p[1])) for p in points], 2)
+            self.screen.blit(surf, (0, 0))
+        # Labels
+        for lx, ly, label in label_points:
+            txt = self.font_small.render(label, True, (140, 145, 160))
+            self.screen.blit(txt, (int(lx) - txt.get_width() // 2, int(ly) - txt.get_height() // 2))
+
+    def draw_brain_screen(self, world, screen_data):
+        """Brain diagram screen."""
+        self.screen.fill((10, 14, 22))
+        title = self.font_large.render("Agy Diagram", True, (200, 210, 230))
+        self.screen.blit(title, (self.screen_w // 2 - title.get_width() // 2, 60))
+
+        cell = screen_data.get('brain_cell')
+        if cell is None or not cell.alive:
+            # Try selected cell
+            cell = self.selected_cell
+        if cell is None:
+            hint = self.font_medium.render("Válassz ki egy sejtet a szimulációban (kattintás)", True, (120, 125, 140))
+            self.screen.blit(hint, (self.screen_w // 2 - hint.get_width() // 2, 120))
+            return
+        screen_data['brain_cell'] = cell
+        genome = cell.genome
+
+        # --- Sense visualization (top section) ---
+        cx = self.screen_w // 2
+        cy = 240
+        scale = 0.6  # pixels per unit for visualization
+
+        # Hearing radius (360 deg, dashed circle)
+        hr = int(genome.hearing_range * scale * 0.5)
+        for a_deg in range(0, 360, 8):
+            a1 = math.radians(a_deg)
+            a2 = math.radians(a_deg + 4)
+            p1 = (cx + int(math.cos(a1) * hr), cy + int(math.sin(a1) * hr))
+            p2 = (cx + int(math.cos(a2) * hr), cy + int(math.sin(a2) * hr))
+            pygame.draw.line(self.screen, (220, 140, 40, 120), p1, p2, 1)
+        lbl = self.font_small.render(f"Hallás: {genome.hearing_range:.0f}px", True, (220, 140, 40))
+        self.screen.blit(lbl, (cx + hr + 5, cy - 8))
+
+        # Smell radius (dotted outer circle)
+        sr = int(genome.smell_range * 18 * scale)
+        for a_deg in range(0, 360, 12):
+            a1 = math.radians(a_deg)
+            px = cx + int(math.cos(a1) * sr)
+            py_dot = cy + int(math.sin(a1) * sr)
+            pygame.draw.circle(self.screen, (60, 200, 80), (px, py_dot), 2)
+        lbl = self.font_small.render(f"Szaglás: {genome.smell_range} cella (érzékenység: {genome.smell_sensitivity:.2f})", True, (60, 200, 80))
+        self.screen.blit(lbl, (cx + sr + 5, cy + 8))
+
+        # Vision cone (filled sector)
+        vr = int(genome.vision_range * scale * 0.5)
+        half_angle = genome.vision_angle / 2
+        facing = -math.pi / 2  # face up for display
+        cone_points = [(cx, cy)]
+        for step in range(21):
+            a = facing - half_angle + (half_angle * 2) * step / 20
+            cone_points.append((cx + int(math.cos(a) * vr), cy + int(math.sin(a) * vr)))
+        if len(cone_points) >= 3:
+            surf = pygame.Surface((self.screen_w, self.screen_h), pygame.SRCALPHA)
+            pygame.draw.polygon(surf, (40, 100, 220, 50), cone_points)
+            pygame.draw.polygon(surf, (60, 130, 255, 160), cone_points, 2)
+            self.screen.blit(surf, (0, 0))
+        lbl = self.font_small.render(f"Látás: {genome.vision_range:.0f}px, {math.degrees(genome.vision_angle):.0f}°", True, (80, 140, 255))
+        self.screen.blit(lbl, (cx + vr + 5, cy - 25))
+
+        # Cell body
+        body_r = max(8, int(genome.size * 2))
+        body_col = genome.color()
+        # Horns on brain diagram
+        horn = genome.horn_size
+        if horn > 0.3:
+            horn_len = int(horn * 5 + 4)
+            horn_col = (230, 220, 180)
+            for side in (-0.35, 0.35):
+                h_angle = -math.pi / 2 + side  # facing up
+                hx1 = cx + int(math.cos(h_angle) * body_r * 0.8)
+                hy1 = cy + int(math.sin(h_angle) * body_r * 0.8)
+                hx2 = hx1 + int(math.cos(h_angle) * horn_len)
+                hy2 = hy1 + int(math.sin(h_angle) * horn_len)
+                pygame.draw.line(self.screen, horn_col, (hx1, hy1), (hx2, hy2), max(1, int(horn * 0.5)))
+        pygame.draw.circle(self.screen, body_col, (cx, cy), body_r)
+        pygame.draw.circle(self.screen, (255, 255, 255), (cx, cy), body_r, 1)
+
+        # --- Neural network diagram (middle section) ---
+        nn_y = cy + max(vr, hr, sr) + 60
+        self._draw_brain_network(genome, self.screen_w // 2, nn_y)
+
+        # --- Behavioral bars (bottom section) ---
+        bar_y = nn_y + 200
+        bars = [
+            ("Agresszió", genome.aggression, (220, 70, 70)),
+            ("Bátorság", genome.bravery, (220, 130, 50)),
+            ("Szociális", genome.social, (70, 180, 220)),
+            ("Lopakodás", genome.stealth, (120, 120, 140)),
+            ("Álcázás", genome.camouflage, (80, 140, 80)),
+            ("Diéta", genome.diet, (220, 160, 50)),
+            ("Metabolizmus", genome.metabolism, (80, 200, 80)),
+            ("Termékenység", genome.fertility / 2, (220, 130, 200)),
+            ("Élettartam", genome.longevity / 3, (180, 180, 100)),
+            ("Regeneráció", genome.regeneration / 2, (100, 220, 100)),
+            ("Éjjellátás", genome.night_vision, (140, 140, 220)),
+            ("Állóképesség", genome.endurance / 2, (200, 160, 80)),
+        ]
+        for i, (label, val, col) in enumerate(bars):
+            bx = self.screen_w // 2 - 150
+            by = bar_y + i * 28
+            txt = self.font_small.render(f"{label}: {val:.2f}", True, (170, 175, 190))
+            self.screen.blit(txt, (bx, by))
+            bar_bg = pygame.Rect(bx + 160, by + 2, 150, 14)
+            pygame.draw.rect(self.screen, (30, 35, 45), bar_bg, border_radius=3)
+            bar_fill = pygame.Rect(bx + 160, by + 2, int(150 * max(0, min(1, val))), 14)
+            pygame.draw.rect(self.screen, col, bar_fill, border_radius=3)
+
+    def _draw_brain_network(self, genome, cx, cy):
+        """Draw simplified neural network connecting senses to behaviors."""
+        input_nodes = [
+            ("LÁTÁS", 40 + 30 * genome.vision_range / 350, (80, 140, 255)),
+            ("HALLÁS", 40 + 30 * genome.hearing_range / 400, (220, 140, 40)),
+            ("SZAGLÁS", 40 + 30 * genome.smell_range / 10, (60, 200, 80)),
+            ("ÉJJELLÁTÁS", 30 + 20 * genome.night_vision, (140, 140, 220)),
+            ("MEMÓRIA", 30 + 20 * genome.memory_capacity / 10, (180, 180, 100)),
+        ]
+        process_nodes = [
+            ("VESZÉLY", (220, 70, 70)),
+            ("ÉTEL", (80, 200, 80)),
+            ("PÁRZÁS", (220, 130, 200)),
+            ("CSORDA", (70, 180, 220)),
+            ("BÁTORSÁG", (220, 160, 50)),
+        ]
+        output_nodes = [
+            ("MENEKÜL", (255, 100, 100)),
+            ("VADÁSZIK", (220, 50, 50)),
+            ("LEGEL", (80, 200, 80)),
+            ("TÁRSASODIK", (70, 180, 220)),
+            ("VÉDEKEZIK", (220, 180, 80)),
+            ("HANGOT AD", (40, 220, 255)),
+            ("PIHEN", (140, 140, 150)),
+        ]
+        # Layout
+        left_x = cx - 280
+        mid_x = cx
+        right_x = cx + 280
+        # Draw connections (weighted by genes)
+        weights = {
+            (0, 0): genome.vision_range / 350,  # vision -> threat
+            (0, 1): genome.vision_range / 350 * 0.5,  # vision -> food
+            (1, 0): genome.hearing_range / 400 * 0.8,  # hearing -> threat
+            (1, 3): genome.hearing_range / 400 * genome.social,  # hearing -> social
+            (2, 1): genome.smell_range / 10,  # smell -> food
+            (2, 2): genome.smell_sensitivity,  # smell -> mate
+            (3, 0): genome.night_vision * 0.7,  # night_vision -> threat
+            (3, 1): genome.night_vision * 0.3,  # night_vision -> food
+            (4, 0): genome.memory_capacity / 10 * 0.5,  # memory -> threat (danger zones)
+            (4, 1): genome.memory_capacity / 10 * 0.8,  # memory -> food (remembered spots)
+        }
+        proc_out_weights = {
+            (0, 0): 1.0 - genome.aggression,  # threat -> flee
+            (0, 1): genome.aggression,  # threat -> hunt
+            (1, 2): 1.0,  # food -> graze
+            (2, 2): 0.3,  # mate -> graze (low)
+            (3, 3): genome.social,  # social -> socialize
+            (4, 0): 1.0 - genome.bravery,  # bravery -> flee (inverse)
+            (4, 4): genome.bravery * genome.horn_size / 5,  # bravery -> defend (with horns)
+            (0, 4): genome.horn_size / 5 * 0.5,  # threat -> defend (horned)
+            (1, 5): genome.hearing_range / 400 * genome.taunt_power,  # hearing -> vocalize
+            (0, 5): genome.taunt_power * (1.0 - genome.stealth),  # threat -> vocalize (if not stealthy)
+            (2, 5): genome.taunt_power * genome.social,  # mate -> vocalize
+        }
+        in_positions = []
+        n_in = len(input_nodes)
+        for i, (label, sz, col) in enumerate(input_nodes):
+            y = cy + (i - (n_in - 1) / 2) * 45
+            in_positions.append((left_x, int(y)))
+            r = max(8, int(sz * 0.35))
+            pygame.draw.circle(self.screen, col, (left_x, int(y)), r)
+            txt = self.font_small.render(label, True, col)
+            self.screen.blit(txt, (left_x - txt.get_width() - 8, int(y) - txt.get_height() // 2))
+        proc_positions = []
+        n_proc = len(process_nodes)
+        for i, (label, col) in enumerate(process_nodes):
+            y = cy + (i - (n_proc - 1) / 2) * 40
+            proc_positions.append((mid_x, int(y)))
+            pygame.draw.circle(self.screen, col, (mid_x, int(y)), 10)
+            txt = self.font_small.render(label, True, col)
+            self.screen.blit(txt, (mid_x - txt.get_width() // 2, int(y) + 14))
+        out_positions = []
+        n_out = len(output_nodes)
+        for i, (label, col) in enumerate(output_nodes):
+            y = cy + (i - (n_out - 1) / 2) * 35
+            out_positions.append((right_x, int(y)))
+            pygame.draw.circle(self.screen, col, (right_x, int(y)), 8)
+            txt = self.font_small.render(label, True, col)
+            self.screen.blit(txt, (right_x + 14, int(y) - txt.get_height() // 2))
+        # Draw connection lines
+        for (si, pi), w in weights.items():
+            if w > 0.05:
+                thickness = max(1, int(w * 4))
+                alpha = int(min(255, w * 200 + 50))
+                sx, sy = in_positions[si]
+                px, py_ = proc_positions[pi]
+                pygame.draw.line(self.screen, (80, 90, 110), (sx + 12, sy), (px - 12, py_), thickness)
+        for (pi, oi), w in proc_out_weights.items():
+            if w > 0.05:
+                thickness = max(1, int(w * 3))
+                px, py_ = proc_positions[pi]
+                ox, oy = out_positions[oi]
+                pygame.draw.line(self.screen, (80, 90, 110), (px + 12, py_), (ox - 10, oy), thickness)
+
+    def draw_lineage_screen(self, world, screen_data):
+        """Ancestral lineage graph screen — interactive family tree."""
+        self.screen.fill((10, 14, 22))
+
+        lineage = getattr(world, 'lineage', {})
+        if not lineage:
+            hint = self.font_medium.render("Még nincs leszármazási adat...", True, (120, 125, 140))
+            self.screen.blit(hint, (self.screen_w // 2 - hint.get_width() // 2, 120))
+            return
+
+        # Determine root cell: selected cell, or top performer
+        living = [c for c in world.cells if c.alive]
+        living_ids = {c.id for c in living}
+        living_map = {c.id: c for c in living}
+
+        # Focus on selected cell if available
+        focus_cell = self.selected_cell if (self.selected_cell and self.selected_cell.alive) else None
+        if focus_cell and focus_cell.id in lineage:
+            # Show selected cell's full lineage tree
+            root_cells = [focus_cell]
+            # Also find siblings (same parents) and children
+            focus_entry = lineage[focus_cell.id]
+            for cid, entry in lineage.items():
+                if entry.get('parent_id') == focus_cell.id or entry.get('parent2_id') == focus_cell.id:
+                    if cid in living_map:
+                        root_cells.append(living_map[cid])
+        else:
+            # Top 15 most successful living cells
+            living.sort(key=lambda c: c.generation + c.children * 0.5, reverse=True)
+            root_cells = living[:15]
+
+        if not root_cells:
+            return
+
+        # Walk ancestor chains + descendants
+        nodes = {}  # id -> lineage_entry
+        edges = []  # (parent_id, child_id)
+
+        def collect_ancestors(cell_id, depth=0):
+            if depth > 20 or cell_id in nodes:
+                return
+            entry = lineage.get(cell_id)
+            if entry is None:
+                return
+            nodes[cell_id] = entry
+            pid = entry.get('parent_id')
+            if pid is not None:
+                edges.append((pid, cell_id))
+                collect_ancestors(pid, depth + 1)
+            pid2 = entry.get('parent2_id')
+            if pid2 is not None:
+                edges.append((pid2, cell_id))
+                collect_ancestors(pid2, depth + 1)
+
+        def collect_descendants(cell_id, depth=0):
+            if depth > 10:
+                return
+            for cid, entry in lineage.items():
+                if cid in nodes:
+                    continue
+                if entry.get('parent_id') == cell_id or entry.get('parent2_id') == cell_id:
+                    nodes[cid] = entry
+                    edges.append((cell_id, cid))
+                    collect_descendants(cid, depth + 1)
+
+        for c in root_cells:
+            if c.id in lineage:
+                collect_ancestors(c.id)
+                collect_descendants(c.id)
+
+        if not nodes:
+            hint = self.font_medium.render("Nincs megjeleníthető fa...", True, (120, 125, 140))
+            self.screen.blit(hint, (self.screen_w // 2 - hint.get_width() // 2, 120))
+            return
+
+        # Layout: group by generation (Y axis), spread horizontally
+        gen_groups = {}
+        for nid, entry in nodes.items():
+            gen = entry.get('generation', 0)
+            gen_groups.setdefault(gen, []).append(nid)
+
+        sorted_gens = sorted(gen_groups.keys())
+        if not sorted_gens:
+            return
+        min_gen = sorted_gens[0]
+        max_gen = sorted_gens[-1]
+        gen_span = max(1, max_gen - min_gen)
+
+        cam_x = screen_data.get('lineage_cam_x', 0)
+        cam_y = screen_data.get('lineage_cam_y', 0)
+        lzoom = screen_data.get('lineage_zoom', 1.0)
+
+        node_positions = {}
+        margin_top = 95
+        margin_bottom = 60
+        available_h = self.screen_h - margin_top - margin_bottom
+        available_w = self.screen_w - 100
+
+        # Sort nodes within each generation by parent position for cleaner layout
+        for gen in sorted_gens:
+            ids = gen_groups[gen]
+            # Sort by parent x position if available
+            def sort_key(nid):
+                entry = nodes.get(nid, {})
+                pid = entry.get('parent_id')
+                if pid and pid in node_positions:
+                    return node_positions[pid][0]
+                return nid  # fallback: by id
+            ids.sort(key=sort_key)
+            y_raw = margin_top + int((gen - min_gen) / gen_span * available_h)
+            for j, nid in enumerate(ids):
+                x_raw = 60 + int((j + 0.5) / max(len(ids), 1) * available_w)
+                sx = int((x_raw - cam_x) * lzoom + self.screen_w * (1 - lzoom) / 2)
+                sy = int((y_raw - cam_y) * lzoom + self.screen_h * (1 - lzoom) / 2)
+                node_positions[nid] = (sx, sy)
+
+        # Draw edges with alpha based on generation distance
+        edge_surf = pygame.Surface((self.screen_w, self.screen_h), pygame.SRCALPHA)
+        for pid, cid in edges:
+            if pid in node_positions and cid in node_positions:
+                p_pos = node_positions[pid]
+                c_pos = node_positions[cid]
+                p_entry = nodes.get(pid, {})
+                diet = p_entry.get('diet', 0.5)
+                if diet <= 0.3:
+                    col = (80, 200, 80, 100)
+                elif diet <= 0.7:
+                    col = (220, 180, 50, 100)
+                else:
+                    col = (220, 70, 70, 100)
+                # Bezier-like curve: midpoint offset
+                mx = (p_pos[0] + c_pos[0]) // 2
+                my = (p_pos[1] + c_pos[1]) // 2
+                pygame.draw.line(edge_surf, col, p_pos, (mx, my), 1)
+                pygame.draw.line(edge_surf, col, (mx, my), c_pos, 1)
+        self.screen.blit(edge_surf, (0, 0))
+
+        # Draw nodes — store rects for hover/click
+        screen_data['_lineage_nodes'] = []
+        mouse_x, mouse_y = pygame.mouse.get_pos()
+        hover_nid = None
+
+        for nid, pos in node_positions.items():
+            entry = nodes[nid]
+            diet = entry.get('diet', 0.5)
+            if diet <= 0.3:
+                col = (80, 200, 80)
+            elif diet <= 0.7:
+                col = (220, 180, 50)
+            else:
+                col = (220, 70, 70)
+            is_alive = nid in living_ids
+            is_focus = focus_cell and nid == focus_cell.id
+            r = 8 if is_focus else (6 if is_alive else 3)
+            pygame.draw.circle(self.screen, col, pos, r)
+            if is_alive:
+                outline_col = (255, 255, 100) if is_focus else (255, 255, 255)
+                pygame.draw.circle(self.screen, outline_col, pos, r, 2 if is_focus else 1)
+            # Check hover
+            dx = mouse_x - pos[0]
+            dy = mouse_y - pos[1]
+            if dx * dx + dy * dy < (r + 4) ** 2:
+                hover_nid = nid
+            screen_data['_lineage_nodes'].append((pygame.Rect(pos[0] - r, pos[1] - r, r * 2, r * 2), nid))
+
+        # Generation labels on left edge
+        for gen in sorted_gens:
+            ids = gen_groups[gen]
+            if ids and ids[0] in node_positions:
+                gy = node_positions[ids[0]][1]
+                gen_lbl = self.font_small.render(f"Gen {gen}", True, (80, 85, 100))
+                self.screen.blit(gen_lbl, (8, gy - 5))
+
+        # Title and stats
+        title = self.font_large.render("Leszármazási Fa", True, (200, 210, 230))
+        self.screen.blit(title, (self.screen_w // 2 - title.get_width() // 2, 8))
+        stats_txt = f"Csomópontok: {len(nodes)}  Kapcsolatok: {len(edges)}  Generációk: {min_gen}-{max_gen}"
+        if focus_cell:
+            stats_txt += f"  |  Kiválasztott: #{focus_cell.id}"
+        stats = self.font_small.render(stats_txt, True, (130, 135, 150))
+        self.screen.blit(stats, (self.screen_w // 2 - stats.get_width() // 2, 40))
+
+        # Legend
+        legend_y = self.screen_h - 30
+        for lbl, col in [("Növényevő", (80, 200, 80)), ("Mindenevő", (220, 180, 50)), ("Ragadozó", (220, 70, 70))]:
+            pygame.draw.circle(self.screen, col, (20, legend_y), 5)
+            lt = self.font_small.render(lbl, True, (160, 165, 180))
+            self.screen.blit(lt, (30, legend_y - 6))
+            legend_y -= 20
+        alive_lbl = self.font_small.render("\u25cb = Élő   \u25cf = Halott ős", True, (120, 125, 140))
+        self.screen.blit(alive_lbl, (20, self.screen_h - 82))
+
+        # Hover tooltip
+        if hover_nid is not None:
+            entry = nodes[hover_nid]
+            diet = entry.get('diet', 0.5)
+            gen = entry.get('generation', 0)
+            species = entry.get('species_name', '')
+            is_alive = hover_nid in living_ids
+            born = entry.get('born_tick', 0)
+            died = entry.get('died_tick')
+            # Count children in lineage
+            child_count = sum(1 for e in lineage.values() if e.get('parent_id') == hover_nid or e.get('parent2_id') == hover_nid)
+            diet_str = "Növényevő" if diet <= 0.3 else ("Mindenevő" if diet <= 0.7 else "Ragadozó")
+            status_str = "ÉLŐ" if is_alive else f"Elhunyt (tick {died})" if died else "Elhunyt"
+
+            # Tooltip lines
+            tip_lines = [
+                f"#{hover_nid} — {species if species else diet_str}",
+                f"Gen {gen} | {status_str}",
+                f"Született: tick {born} | Gyerekek: {child_count}",
+            ]
+            # Extra info for living cells
+            if is_alive and hover_nid in living_map:
+                lc = living_map[hover_nid]
+                tip_lines.append(f"HP: {lc.hp:.0f}/{lc.max_hp:.0f}  Energy: {lc.energy:.0f}")
+                tip_lines.append(f"Kills: {lc.kills}  Age: {lc.age}")
+
+            # Render tooltip
+            tip_w = max(self.font_small.size(l)[0] for l in tip_lines) + 16
+            tip_h = len(tip_lines) * 16 + 10
+            tip_x = min(mouse_x + 12, self.screen_w - tip_w - 5)
+            tip_y = max(5, mouse_y - tip_h - 5)
+            tip_surf = pygame.Surface((tip_w, tip_h), pygame.SRCALPHA)
+            tip_surf.fill((20, 25, 40, 220))
+            self.screen.blit(tip_surf, (tip_x, tip_y))
+            pygame.draw.rect(self.screen, (80, 100, 140), (tip_x, tip_y, tip_w, tip_h), 1, border_radius=3)
+            for i, line in enumerate(tip_lines):
+                col = (230, 235, 245) if i == 0 else (170, 175, 190)
+                txt = self.font_small.render(line, True, col)
+                self.screen.blit(txt, (tip_x + 8, tip_y + 5 + i * 16))
+
+        # Zoom/pan hint
+        hint = self.font_small.render("Scroll: zoom | Húzás: mozgatás | Kattintás csomópontra: sejt kijelölés", True, (80, 85, 100))
+        self.screen.blit(hint, (self.screen_w // 2 - hint.get_width() // 2, self.screen_h - 18))
+
 
 # --- Petri Dish (Gene Editor) ---
 class PetriDish:
@@ -5138,7 +6772,22 @@ class PetriDish:
 
     GENE_DEFS = [
         {"name": "Size",        "idx": 0,  "min": 3,    "max": 25,   "step": 0.5,  "fmt": "{:.1f}"},
-        {"name": "Sense",       "idx": 1,  "min": 15,   "max": 350,  "step": 5,    "fmt": "{:.0f}"},
+        {"name": "Vis.range",   "idx": 1,  "min": 15,   "max": 350,  "step": 5,    "fmt": "{:.0f}"},
+        {"name": "Vis.angle",   "idx": 17, "min": 0.52, "max": 5.24, "step": 0.1,  "fmt": "{:.1f}rad"},
+        {"name": "Hearing",     "idx": 18, "min": 20,   "max": 400,  "step": 5,    "fmt": "{:.0f}"},
+        {"name": "Smell rng",   "idx": 19, "min": 1,    "max": 10,   "step": 1,    "fmt": "{:.0f}"},
+        {"name": "Smell sns",   "idx": 20, "min": 0.01, "max": 1.0,  "step": 0.05, "fmt": "{:.2f}"},
+        {"name": "Horn size",   "idx": 21, "min": 0,    "max": 5,    "step": 0.25, "fmt": "{:.1f}"},
+        {"name": "Sprint pwr", "idx": 22, "min": 0.3,  "max": 2.5,  "step": 0.1,  "fmt": "{:.1f}"},
+        {"name": "Longevity", "idx": 23, "min": 0.5,  "max": 3.0,  "step": 0.1,  "fmt": "{:.1f}"},
+        {"name": "Regen",     "idx": 24, "min": 0.2,  "max": 2.0,  "step": 0.1,  "fmt": "{:.1f}"},
+        {"name": "Memory",    "idx": 25, "min": 1,    "max": 10,   "step": 1,    "fmt": "{:.0f}"},
+        {"name": "Growth spd","idx": 26, "min": 0.5,  "max": 2.0,  "step": 0.1,  "fmt": "{:.1f}"},
+        {"name": "Endurance", "idx": 27, "min": 0.3,  "max": 2.0,  "step": 0.1,  "fmt": "{:.1f}"},
+        {"name": "Bravery",   "idx": 28, "min": 0,    "max": 1,    "step": 0.05, "fmt": "{:.2f}"},
+        {"name": "Camo",      "idx": 29, "min": 0,    "max": 1,    "step": 0.05, "fmt": "{:.2f}"},
+        {"name": "Fertility", "idx": 30, "min": 0.5,  "max": 2.0,  "step": 0.1,  "fmt": "{:.1f}"},
+        {"name": "Nght.vis",  "idx": 31, "min": 0,    "max": 1,    "step": 0.05, "fmt": "{:.2f}"},
         {"name": "Attack",      "idx": 2,  "min": 0,    "max": 15,   "step": 0.5,  "fmt": "{:.1f}"},
         {"name": "Defense",     "idx": 3,  "min": 0,    "max": 15,   "step": 0.5,  "fmt": "{:.1f}"},
         {"name": "Metabolism",  "idx": 4,  "min": 0.2,  "max": 1.0,  "step": 0.05, "fmt": "{:.2f}"},
@@ -5584,6 +7233,15 @@ class Game:
         self._headless_tick_count = 0
         self._headless_last_time = 0
 
+        # Screen navigation: 0=Simulation, 1=Species, 2=Brain, 3=Lineage
+        self.current_screen = 0
+        self.screen_data = {
+            'selected_species_idx': 0,
+            'brain_cell': None,
+            'lineage_cam_x': 0, 'lineage_cam_y': 0, 'lineage_zoom': 1.0,
+            'species_scroll': 0,
+        }
+
         # Camera to center
         self.renderer.cam_x = (self.world_w - self.screen_w) / 2
         self.renderer.cam_y = (self.world_h - self.screen_h) / 2
@@ -5638,7 +7296,17 @@ class Game:
                     # Action camera update (after simulation step)
                     if self.renderer.action_cam:
                         self.renderer.update_action_cam(self.world)
-                self.renderer.draw(self.world, self.paused, self.sim_speed)
+                if self.current_screen == 0:
+                    self.renderer.draw(self.world, self.paused, self.sim_speed)
+                elif self.current_screen == 1:
+                    self.renderer.draw_species_screen(self.world, self.screen_data)
+                elif self.current_screen == 2:
+                    self.renderer.draw_brain_screen(self.world, self.screen_data)
+                elif self.current_screen == 3:
+                    self.renderer.draw_lineage_screen(self.world, self.screen_data)
+                # Tab bar only on non-simulation screens
+                if self.current_screen != 0:
+                    self.renderer.draw_tab_bar(self.current_screen)
                 self.settings_menu.draw(self.screen, self.world.settings)
                 pygame.display.flip()
                 self.clock.tick(FPS)
@@ -5649,8 +7317,30 @@ class Game:
             if event.type == pygame.QUIT:
                 self.running = False
             elif event.type == pygame.KEYDOWN:
-                if event.key in (pygame.K_ESCAPE, pygame.K_q):
+                if event.key == pygame.K_q:
                     self.running = False
+                elif event.key == pygame.K_ESCAPE:
+                    if self.current_screen != 0:
+                        self.current_screen = 0
+                    else:
+                        self.running = False
+                elif event.key == pygame.K_F5:
+                    self.current_screen = 0
+                elif event.key == pygame.K_F6:
+                    self.current_screen = 1
+                    # Auto-select the selected cell's species
+                    sel = self.renderer.selected_cell
+                    if sel and sel.alive:
+                        idx = self.renderer._find_cell_species_idx(sel, self.world)
+                        self.screen_data['selected_species_idx'] = idx
+                elif event.key == pygame.K_F7:
+                    self.current_screen = 2
+                    # Auto-load the selected cell into brain view
+                    sel = self.renderer.selected_cell
+                    if sel and sel.alive:
+                        self.screen_data['brain_cell'] = sel
+                elif event.key == pygame.K_F8:
+                    self.current_screen = 3
                 elif event.key == pygame.K_SPACE:
                     self.paused = not self.paused
                 elif event.key == pygame.K_w:
@@ -5747,6 +7437,17 @@ class Game:
                         self.paused = True  # Pause when menu opens
             elif event.type == pygame.MOUSEMOTION:
                 self.settings_menu.handle_mouse_move(event.pos)
+                # Lineage screen pan: drag to move camera
+                if self.current_screen == 3 and pygame.mouse.get_pressed()[0]:
+                    dx, dy = event.rel
+                    lzoom = self.screen_data.get('lineage_zoom', 1.0)
+                    self.screen_data['lineage_cam_x'] = self.screen_data.get('lineage_cam_x', 0) - dx / lzoom
+                    self.screen_data['lineage_cam_y'] = self.screen_data.get('lineage_cam_y', 0) - dy / lzoom
+                    continue
+                # Minimap dragging — hold left button and drag on minimap
+                if self.current_screen == 0 and pygame.mouse.get_pressed()[0]:
+                    if self.renderer.minimap_click(event.pos, self.world):
+                        continue
                 # Petri dish slider dragging
                 if self.renderer.petri_dish.handle_drag(event.pos):
                     continue
@@ -5773,6 +7474,29 @@ class Game:
                     self.renderer.petri_dish.handle_release()
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
+                    # Tab bar click (all screens)
+                    tab = self.renderer.tab_click(event.pos)
+                    if tab >= 0:
+                        self.current_screen = tab
+                        continue
+                    # Species screen click handling
+                    if self.current_screen == 1:
+                        for rect, idx in self.screen_data.get('_species_rects', []):
+                            if rect.collidepoint(event.pos):
+                                self.screen_data['selected_species_idx'] = idx
+                                break
+                        continue
+                    # Lineage screen: click on node to select that cell
+                    if self.current_screen == 3:
+                        for rect, nid in self.screen_data.get('_lineage_nodes', []):
+                            if rect.collidepoint(event.pos):
+                                # Find the living cell with this id
+                                for c in self.world.cells:
+                                    if c.id == nid and c.alive:
+                                        self.renderer.selected_cell = c
+                                        break
+                                break
+                        continue
                     # If menu is open and clicked inside
                     if self.settings_menu.visible:
                         if self.settings_menu.is_click_inside(event.pos):
@@ -5795,6 +7519,9 @@ class Game:
                             continue
                         if pd.handle_click(event.pos):
                             continue
+                    # Minimap click — teleport camera
+                    if self.current_screen == 0 and self.renderer.minimap_click(event.pos, self.world):
+                        continue
                     # Start dragging a cell?
                     wx, wy = self.renderer.screen_to_world(*event.pos)
                     for cell in self.world.cells:
@@ -5810,9 +7537,15 @@ class Game:
                         # No cell grabbed — normal click
                         self.renderer.handle_click(event.pos, self.world)
                 elif event.button == 4:  # Scroll up - zoom in
-                    self.renderer.zoom = min(3.0, self.renderer.zoom * 1.1)
+                    if self.current_screen == 3:
+                        self.screen_data['lineage_zoom'] = min(4.0, self.screen_data.get('lineage_zoom', 1.0) * 1.15)
+                    else:
+                        self.renderer.zoom = min(3.0, self.renderer.zoom * 1.1)
                 elif event.button == 5:  # Scroll down - zoom out
-                    self.renderer.zoom = max(0.3, self.renderer.zoom / 1.1)
+                    if self.current_screen == 3:
+                        self.screen_data['lineage_zoom'] = max(0.3, self.screen_data.get('lineage_zoom', 1.0) / 1.15)
+                    else:
+                        self.renderer.zoom = max(0.3, self.renderer.zoom / 1.1)
 
         # Camera movement with arrows + mouse at edges (disabled during action cam)
         if self.renderer.action_cam:

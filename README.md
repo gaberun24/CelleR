@@ -1,121 +1,143 @@
 # CelleR - Evolutionary Single-Cell Organism Simulation
 
-A real-time 2D evolution simulator built with Python and Pygame where single-celled organisms live, eat, reproduce, mutate, and evolve through natural selection. Watch herbivores, omnivores, and predators emerge from a primordial soup as they develop unique traits across generations.
+Real-time 2D evolution simulators built with Python + Pygame where single-celled organisms live, eat, reproduce, mutate, and evolve through natural selection.
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue) ![Pygame](https://img.shields.io/badge/Pygame-2.0+-green) ![NumPy](https://img.shields.io/badge/NumPy-required-orange)
+![Python](https://img.shields.io/badge/Python-3.10+-blue) ![Pygame](https://img.shields.io/badge/Pygame-2.0+-green) ![NumPy](https://img.shields.io/badge/NumPy-required-orange)
 
-## Features
+## CelleR 2 - NEAT Neural Network Evolution
 
-### Genetic System (17 Genes)
-Each cell carries a genome that controls its physical traits and behavior:
-- **Size** — body radius, affects energy cost, HP, and combat
-- **Sense Range** — how far the cell can detect food, mates, and threats
-- **Attack / Defense** — combat stats for predator-prey encounters
-- **Metabolism** — energy efficiency multiplier
-- **Diet** — herbivore (0-0.3), omnivore (0.3-0.7), or predator (0.7-1.0) on a continuous spectrum
-- **Cilia Count & Spread** — number of cilia and their arrangement (torpedo vs. jellyfish locomotion)
-- **Cilia Power** — thrust force per cilium
-- **Turn Rate** — rotational speed
-- **Aggression & Social** — behavioral tendencies
-- **Reproduction Threshold & Litter Size** — when and how many offspring
-- **Taunt Power** — sonar-ping range and intensity for communication
-- **Stealth** — how hard to detect when moving slowly (predator specialization)
+**`cell_evolution2.py`** (~4700 lines) - Complete rewrite where **every decision is made by an evolving neural network**. No hardcoded behavior rules. Cells learn to eat, flee, hunt, and mate through NEAT (NeuroEvolution of Augmenting Topologies).
 
-### Movement Physics
-Cells move using a cilia-based propulsion system with two distinct locomotion styles:
-- **Torpedo mode** (spread = 0): all cilia point forward for fast straight-line movement, slow turning
-- **Jellyfish mode** (spread = 1): cilia spread around the body, enabling lateral movement and rapid direction changes at the cost of some forward speed
-- Energy-efficient **thrust system**: cells adjust their "gas pedal" (0-1) based on context
+### Key differences from CelleR 1
 
-### Three Cell Types
+| | CelleR 1 | CelleR 2 |
+|---|---|---|
+| **AI** | ~1500 lines of hardcoded behavior trees | NEAT neural networks (24 inputs, 18 outputs) |
+| **Behavior** | Predictable, scripted | Emergent, evolved |
+| **Genome** | 32-gene monolithic | Dual: BodyGenome (15 physical genes) + NeatGenome (topology + weights) |
+| **Species** | Fixed herbivore/carnivore/omnivore | Continuous diet spectrum with NEAT-based speciation |
+| **Training** | None | Pre-training arena with 4 scenarios |
 
-- **Herbivores** (diet 0-0.3) — eat plants, enhanced food sensing (1.6x), flee from predators, herd defense
-- **Omnivores** (diet 0.3-0.7) — eat plants and old carcasses, don't hunt live prey
-- **Predators** (diet 0.7-1.0) — hunt herbivores and omnivores, pack hunting, ambush tactics
+### Dual Genome System
 
-### Ecosystem
+Each cell has two genomes:
 
-- **Food Oases** — food grows in clusters that regenerate, with burst regrowth when depleted
-- **Corpse System** — dead cells become carcasses with freshness decay (predators eat fresh, omnivores eat old)
-- **Shelters** — hiding spots for prey, ambush positions for predators
-- **Obstacles** — rocks that block line-of-sight but not sound/taunts (Liang-Barsky intersection)
-- **Reproductive Isolation** — only cells with diet difference < 0.15 can mate (prevents species blending)
+**BodyGenome (hardware)** - 15 physical genes controlling:
+- Size, cilia count/spread/power, metabolism, hue
+- Diet (0=herbivore ... 1=carnivore), vision range, hearing range
+- Horn size/count/spread, mouth size, turn rate
 
-### Taunt System (Sonar Ping Communication)
-Cells emit expanding ring waves that trigger once as the wavefront passes:
-- **Mate taunt** (pink) — attracts compatible mates from afar (predators emit 2x range)
-- **Attack taunt** (red) — alpha predator orders pack to target specific prey, overrides existing targets
-- **Flee taunt** (yellow) — panic signal causing allies to flee with zigzag evasion
-- Hungry predators **eavesdrop** on prey taunts and are attracted to the sound
+**NeatGenome (software)** - evolving neural network:
+- Starts sparse (24 inputs directly connected to 18 outputs)
+- NEAT mutations add hidden nodes and connections over time
+- Topological sort (Kahn's algorithm) for valid feedforward evaluation
+- 2 memory channels allow cells to maintain state between ticks
+- Brain cost: larger networks drain more energy (evolution pressure for efficiency)
 
-### Stealth System
-- Predators with high stealth gene are harder to detect when moving slowly
-- Detection formula considers: speed ratio, stealth gene, hiding bonus, distance
-- Close range negates stealth — prey always spots predators nearby
-- Trade-off: stealth costs extra energy to maintain
+### Neural Network
 
-### Smart Predator AI
-- **7 behavioral phases**: rest → scavenge → stalk → ambush → chase → give up → patrol
-- **ROI hunting** — abandons chase if energy spent exceeds 35% of expected reward
-- **Interceptor targeting** — aims where prey will be, not where it is (smoothed prediction)
-- **Pack hunting** — alpha coordinates attacks via taunt, flanking at range
-- **Target stickiness** — score bonus for current target prevents oscillation
-- **Memory** — learns which prey types (weak, isolated, slow) are easiest to catch
-- **Bite shock** — strong bites stun prey (5-25 ticks paralysis), weaker bites slow them (30-70% speed)
+**24 Inputs** (normalized): energy, HP, thirst, speed, nearest food/threat/prey/mate (inverted distance + angle), smell gradients (food, danger), nearby density, 2x memory
 
-### Herbivore AI
-- **Stealth-aware detection** — slow predators at distance go unnoticed
-- **Tiered flee response** — panic sprint (very close), shelter seeking (close), alert retreat (far)
-- **Herd defense** — large groups are braver; tank cells provide defense aura
-- **Migration** — relocates when area becomes too dangerous (3+ attacks)
-- **Memory** — remembers food spots and danger zones, shares with herd
+**18 Outputs** (tanh): 6x cilia power (positive-only), 6x cilia steering, attack/eat/mate/vocalize intents, 2x memory output
 
-### Pheromone System (7 Types)
-| Pheromone | Purpose |
-|-----------|---------|
-| Trail | General movement trace |
-| Danger | Predator warning signal |
-| Food Here | Marks food locations |
-| Ambush | Predator lurking spot |
-| Mate | Growing cloud for mate-seeking cells |
-| Prey Scent | Herbivore/omnivore trail for predator tracking |
-| Corpse Scent | Expanding stench cloud from decaying carcasses |
+### Biological Systems
 
-### Well-Fed Sluggishness
-- Herbivores and omnivores become slower and less alert when full (up to 35% debuff)
-- `alertness = 1.0 - fullness * 0.35` affects both speed and sense range
-- Creates natural boom-bust cycles: abundant food → fat prey → easy hunting → more predators
-- Predators are always sharp — no sluggishness penalty
+- **Directional mouth** - Gene-controlled cone angle (55-80 deg). Must face food to eat. Contact absorption if food overlaps body.
+- **Continuous diet curve** - `plant_eff = (1-diet)^0.7`, `meat_eff = diet^0.7`. No magic thresholds.
+- **Multi-horn system** - 0-3 horns with gene-controlled positions. Carnivore synergy (+30% attack), herbivore synergy (+50% defense).
+- **Positive-only cilia** - Can only push, not pull. Visual animation reflects actual thrust direction.
+- **Turn rate limit** - Genetic cap on angular velocity.
+- **Pheromone system** - 7 types: trail, danger, food, mate, prey scent, corpse scent, ambush.
 
-### Bounding Circle Collision
-- Same-type cells can't overlap or pass through each other
-- Mass-proportional push resolution (heavier cells move less)
-- Predator-prey pairs excluded from collision (so attacks aren't blocked)
-- Prevents unrealistic 50-cells-per-pixel clustering
+### Pre-Training Arena (F9)
 
-### Action Camera
-- Press `C` to toggle automatic cinematic camera
-- Auto-zooms to exciting events: combat, pack hunts, chases, panic signals
-- Event scoring system prioritizes the most dramatic moments
-- Holds 5-10 seconds per event with smooth lerp transitions
-- **Minimap** (180x180px, bottom-left) shows world overview when active
+The main simulation starts **empty**. Train cells in isolated arenas, save good genomes, then inject them into the world.
 
-### Population Cap
-- Configurable maximum cell count (default: 400, adjustable 50-1000 in settings)
-- When cap is reached, the most populous species stops reproducing
-- Other species can still reproduce, maintaining diversity
-- Hard cap prevents runaway population even if blocking isn't enough
+| Key | Scenario | What it trains | Cell type |
+|---|---|---|---|
+| 1 | Food Search | Directional eating, food navigation | Herbivores |
+| 2 | Flee Training | Evading auto-predators | Small fast herbivores |
+| 3 | Hunt Training | Killing prey (progressive difficulty) | Carnivores |
+| 4 | Free Evolution | Mini-ecosystem survival | Mixed |
 
-### Hibernation
-- Predators/omnivores enter hibernation instead of dying (once per lifetime, max 500 ticks)
-- Metabolism drops to 1%, awakens with adrenaline burst when prey enters range (costs 15% max HP)
-- Omnivore hibernators also wake up for nearby food
+**Hunt Training** has progressive prey difficulty:
+- 0-5k ticks: Stationary prey (learn to approach and attack)
+- 5k-20k: Slow prey
+- 20k-50k: Medium speed
+- 50k+: Full speed
 
-### Fitness-Weighted Reproduction
-- Both parents contribute energy to offspring (no energy black hole)
-- Better parent's genes dominate (55-75% inheritance ratio)
-- K-strategy (predators: 1 strong offspring) vs r-strategy (herbivores: 2-4 fast offspring)
-- Memory inheritance: hunting grounds, food spots, danger zones pass to children
+**Hall of Fame**: If all cells die, the best-ever genome respawns (1 clone + 4 mutated variants).
+
+### Genome Library
+
+Save trained genomes for injection into the main world:
+- **S** / **Shift+S**: Save best / top 5 genomes (filtered by scenario: hunt=carnivores only, etc.)
+- **C**: Clear library
+- **Ctrl+I** (in main sim): Inject all saved genomes
+- **Delete** (in main sim): Clear all cells
+
+Files saved to `celler2_genomes/` with names like `genome_003_carn_hunt_training_f45.json`.
+
+### Screens
+
+| Key | Screen |
+|---|---|
+| F1 | Help overlay |
+| F5 | Simulation view |
+| F6 | Species list (NEAT speciation) |
+| F7 | Brain / NEAT topology (hover nodes for connection details, Bezier curves) |
+| F8 | Lineage tree |
+| F9 | Pre-training arena |
+| F10 | Settings menu |
+
+### Controls
+
+| Key | Action |
+|---|---|
+| Space | Pause / Resume |
+| 1-4 | Speed: 1x / 2x / 5x / 10x |
+| Click | Select cell |
+| Tab | Action cam (follow selected cell) |
+| Scroll | Zoom in / out |
+| Arrows / WASD | Move camera |
+| Delete | Clear all cells |
+| Ctrl+I | Inject saved genomes |
+| Ctrl+S / Ctrl+L | Save / Load game |
+| ESC | Quit (autosaves) |
+
+---
+
+## CelleR 1 - Behavior Tree AI
+
+**`cell_evolution.py`** (~7600 lines) - The original version with hardcoded AI behavior trees.
+
+### Features
+- **17-gene genetic system** controlling size, diet, cilia, combat stats, stealth, metabolism
+- **Smart Predator AI** with 7 behavioral phases: rest, scavenge, stalk, ambush, chase, give up, patrol
+- **Pack hunting** with alpha coordination via taunt system
+- **Herbivore herd defense** with migration and danger memory
+- **Sonar ping communication** (mate/attack/flee taunts as expanding ring waves)
+- **Stealth system** for ambush predators
+- **Hibernation** for predators/omnivores at low energy
+- **Action camera** auto-zooming to combat and dramatic events
+
+### Controls
+
+| Key | Action |
+|---|---|
+| Space | Pause / Resume |
+| W / S | Speed up / Slow down |
+| Arrow Keys | Move camera |
+| Scroll | Zoom in / out |
+| Click | Select cell |
+| C | Toggle action camera |
+| F | Add food clusters |
+| 1 / 2 / 3 | Spawn herbivores / predators / omnivores |
+| H | Toggle headless mode |
+| M | Settings menu |
+| Ctrl+S / Ctrl+L | Save / Load |
+
+---
 
 ## Installation
 
@@ -123,70 +145,17 @@ Cells emit expanding ring waves that trigger once as the wavefront passes:
 pip install pygame numpy
 ```
 
-## Usage
+## Running
 
 ```bash
-# English version
-python cell_evolution_en.py
+# CelleR 2 (NEAT neural networks)
+python cell_evolution2.py
 
-# Hungarian version (eredeti)
+# CelleR 1 (behavior trees)
 python cell_evolution.py
 ```
 
-## Controls
-
-| Key | Action |
-|-----|--------|
-| `SPACE` | Pause / Resume |
-| `W` / `S` | Speed up / Slow down |
-| `Arrow Keys` | Move camera |
-| `Scroll` | Zoom in / out |
-| `Click` | Select cell (view details + pheromone overlay) |
-| `C` | Toggle action camera (auto-zoom to events + minimap) |
-| `F` | Add food clusters |
-| `1` / `2` / `3` | Spawn herbivores / predators / omnivores |
-| `H` | Toggle headless mode (max simulation speed, no rendering) |
-| `M` | Settings menu (live parameter tuning) |
-| `TAB` | Toggle stats panel |
-| `Ctrl+S` | Save world state to JSON |
-| `Ctrl+L` | Load world state from JSON |
-| `R` | Reset simulation |
-| `Q` / `ESC` | Quit |
-
-### Headless Mode
-Press `H` to run the simulation at maximum speed without rendering. The display updates periodically to show progress. Use `+`/`-` to adjust render interval.
-
-## Settings Menu
-
-Press `M` to open the live settings panel:
-- **Food Energy** — energy value of food items
-- **Eating Speed** — how fast cells consume food per tick
-- **Food Regrowth** — oasis regeneration rate
-- **Reproduction Cost** — energy fraction spent on reproduction
-- **Mutation Rate** — chance of gene mutation per gene
-- **Mutation Strength** — magnitude of mutations
-- **Max Population** — population cap (50-1000)
-
-## Architecture
-
-Single-file Python application (~4200 lines):
-
-| Class | Purpose |
-|-------|---------|
-| `Genome` | 17-gene genetic code with properties, crossover, mutation |
-| `Cell` | Organism: physics, HP, sprint, memory, reproduction |
-| `PheromoneMap` | Grid-based chemical signaling (7 types, gradient reading) |
-| `SpatialGrid` | Spatial hashing for O(1) neighbor queries |
-| `World` | Simulation engine: AI, food, combat, spawning, save/load |
-| `Renderer` | Pygame visualization: camera, HUD, graphs, pheromone overlay |
-| `SettingsMenu` | Live-adjustable simulation parameters with sliders |
-| `Game` | Main loop, input handling, headless mode |
-
-## Requirements
-
-- Python 3.8+
-- Pygame 2.0+
-- NumPy
+Requires Python 3.10+, Pygame 2.0+, NumPy.
 
 ## License
 
