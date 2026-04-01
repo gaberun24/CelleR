@@ -1981,6 +1981,7 @@ class World:
             self._process_energy(cell)
             self._process_thirst(cell)
 
+        self._process_cell_collisions()
         self._process_combat()
         self._process_eating()
         self._process_reproduction()
@@ -2094,8 +2095,42 @@ class World:
             cell.thirst = 0
             cell.take_damage(DEHYDRATION_DMG)
 
+    def _process_cell_collisions(self):
+        """Push overlapping cells apart (mass-proportional)."""
+        alive = [c for c in self.cells if c.alive]
+        for cell in alive:
+            r1 = cell.body_genome.size
+            m1 = r1 * r1  # mass proportional to area
+            nearby = self.spatial.query(cell.x, cell.y, r1 * 3)
+            for other in nearby:
+                if not isinstance(other, Cell) or other is cell or not other.alive:
+                    continue
+                # Skip predator-prey pairs (let them overlap for combat)
+                if abs(cell.body_genome.diet - other.body_genome.diet) > 0.4:
+                    continue
+                r2 = other.body_genome.size
+                dx = other.x - cell.x
+                dy = other.y - cell.y
+                d2 = dx * dx + dy * dy
+                min_dist = r1 + r2
+                if d2 < min_dist * min_dist and d2 > 0.01:
+                    d = math.sqrt(d2)
+                    overlap = min_dist - d
+                    nx = dx / d
+                    ny = dy / d
+                    # Mass-proportional push (heavier cell moves less)
+                    m2 = r2 * r2
+                    total = m1 + m2
+                    push1 = overlap * m2 / total
+                    push2 = overlap * m1 / total
+                    cell.x -= nx * push1 * 0.5
+                    cell.y -= ny * push1 * 0.5
+                    other.x += nx * push2 * 0.5
+                    other.y += ny * push2 * 0.5
+
     def _process_combat(self):
-        """Handle attacks between cells."""
+        """Handle bite attacks (mouth-only) and horn collision damage."""
+        # --- BITE ATTACKS (mouth cone required) ---
         for cell in self.cells:
             if not cell.alive or not cell.attack_intent:
                 continue
@@ -2103,7 +2138,9 @@ class World:
                 continue
 
             bg = cell.body_genome
-            nearby = self.spatial.query(cell.x, cell.y, ATTACK_RANGE + bg.size)
+            bite_range = ATTACK_RANGE + bg.size
+            mouth_half = bg.mouth_cone_half  # same cone as eating
+            nearby = self.spatial.query(cell.x, cell.y, bite_range)
 
             for other in nearby:
                 if not isinstance(other, Cell) or other is cell or not other.alive:
@@ -2111,32 +2148,70 @@ class World:
                 dx = other.x - cell.x
                 dy = other.y - cell.y
                 d = math.sqrt(dx * dx + dy * dy)
-                if d > ATTACK_RANGE + bg.size:
+                if d > bite_range:
                     continue
 
-                # Check angle (attack in facing direction, ~90° cone)
+                # Mouth cone check — must face the target to bite
                 angle_to = math.atan2(dy, dx)
-                angle_diff = abs(((angle_to - cell.angle + math.pi) % (2 * math.pi)) - math.pi)
-                if angle_diff > 0.8:
+                diff = (angle_to - cell.angle + math.pi) % (2 * math.pi) - math.pi
+                if abs(diff) > mouth_half:
                     continue
 
-                # Damage (attack_power already includes diet synergy)
+                # Bite damage (attack_power includes diet synergy)
                 dmg = bg.attack_power
-                # Defender horn passive defense (includes herbivore synergy)
-                defender_horn_dmg = other.body_genome.horn_defense
                 other.take_damage(dmg)
-                cell.take_damage(defender_horn_dmg)
 
                 # Stun
                 other.stun_timer = STUN_DURATION
-
                 cell.attack_cooldown = ATTACK_COOLDOWN
-                cell.energy -= 0.002  # attack cost
+                cell.energy -= 0.002
 
                 if not other.alive:
                     cell.kills += 1
                     cell.fitness += 2.0
-                break  # one attack per tick
+                break  # one bite per tick
+
+        # --- HORN COLLISION DAMAGE (physical contact only) ---
+        for cell in self.cells:
+            if not cell.alive:
+                continue
+            bg = cell.body_genome
+            n_horns = bg.num_horns
+            if n_horns == 0:
+                continue
+            horn_angles = bg.horn_positions()
+            horn_len = bg.size + bg.genes[BG_HORN_SIZE] * 1.5  # horn tip reach
+            horn_dmg_per = bg.genes[BG_HORN_SIZE] * 0.8 * (1.0 + (1.0 - bg.diet) * 0.5)  # herb synergy
+
+            nearby = self.spatial.query(cell.x, cell.y, horn_len + 25)
+            for other in nearby:
+                if not isinstance(other, Cell) or other is cell or not other.alive:
+                    continue
+                dx = other.x - cell.x
+                dy = other.y - cell.y
+                d = math.sqrt(dx * dx + dy * dy)
+                if d < 0.01:
+                    continue
+                other_r = other.body_genome.size
+
+                # Check if any horn tip touches the other cell
+                for ha in horn_angles:
+                    tip_angle = cell.angle + ha
+                    tip_x = cell.x + math.cos(tip_angle) * horn_len
+                    tip_y = cell.y + math.sin(tip_angle) * horn_len
+                    # Distance from horn tip to other cell center
+                    tdx = tip_x - other.x
+                    tdy = tip_y - other.y
+                    if tdx * tdx + tdy * tdy < other_r * other_r:
+                        # Horn tip inside other cell — deal damage
+                        other.take_damage(horn_dmg_per)
+                        other.stun_timer = max(other.stun_timer, STUN_DURATION // 2)
+                        # Push other away from horn
+                        if d > 0:
+                            push = 2.0
+                            other.vx += (dx / d) * push
+                            other.vy += (dy / d) * push
+                        break  # one horn hit per pair per tick
 
     def _process_eating(self):
         """Handle eating food and carcasses — directional (mouth cone only)."""
@@ -3575,8 +3650,8 @@ class PreTrainingArena:
         self.world.foods = []
         self.world.carcasses = []
 
-        # Hall of fame: best genome ever seen per role (for respawn on extinction)
-        self._best_ever = None   # (fitness, BodyGenome, NeatGenome)
+        # Hall of fame: top 3 best genomes ever seen (for respawn on extinction)
+        self._hall_of_fame = []  # [(fitness, BodyGenome, NeatGenome), ...] max 3, sorted desc
 
         self.running = False
         self.tick_count = 0
@@ -3648,6 +3723,49 @@ class PreTrainingArena:
             return 0.5 + 0.3 * (t - 20000) / 30000
         else:
             return min(1.0, 0.8 + 0.2 * (t - 50000) / 50000)
+
+    def _update_hall_of_fame(self, candidates):
+        """Update hall of fame with best candidates. Keeps top 3 unique genomes."""
+        for c in candidates:
+            entry = (
+                c.fitness,
+                BodyGenome(c.body_genome.genes.copy()),
+                NeatGenome.from_dict(c.neat_genome.to_dict()),
+            )
+            # Don't add if worse than all existing and already full
+            if len(self._hall_of_fame) >= 3 and c.fitness <= self._hall_of_fame[-1][0]:
+                continue
+            self._hall_of_fame.append(entry)
+            # Sort descending by fitness, keep top 3
+            self._hall_of_fame.sort(key=lambda x: x[0], reverse=True)
+            self._hall_of_fame = self._hall_of_fame[:3]
+
+    def _respawn_from_hall_of_fame(self, count=5):
+        """Spawn cells from hall of fame genomes (clones + mutated variants)."""
+        if not self._hall_of_fame:
+            # No hall of fame yet — spawn fresh scenario cells
+            for _ in range(count):
+                self.add_cell()
+            return
+        spawned = 0
+        for i in range(count):
+            # Cycle through hall of fame entries
+            _, bg_template, ng_template = self._hall_of_fame[i % len(self._hall_of_fame)]
+            bg = BodyGenome(bg_template.genes.copy())
+            ng = NeatGenome.from_dict(ng_template.to_dict())
+            # First clone of each is exact, rest are mutated
+            if i >= len(self._hall_of_fame):
+                bg.mutate()
+                ng.mutate()
+            x = random.randint(50, self.width - 50)
+            y = random.randint(50, self.height - 50)
+            cell = Cell(x, y, bg, ng)
+            if self.scenario == self.SCENARIO_HUNT and bg.diet > 0.5:
+                cell.energy = cell.body_genome.energy_cap * 0.8
+            else:
+                cell.energy = cell.body_genome.repro_threshold * 0.9
+            self.world.cells.append(cell)
+            spawned += 1
 
     def _spawn_hunt_prey(self, difficulty=None):
         """Spawn a prey cell with speed based on difficulty (0=stationary, 1=full speed)."""
@@ -3754,88 +3872,68 @@ class PreTrainingArena:
         for _ in range(n):
             self.world.update()
             self.tick_count += 1
-            # Regrow food/carcasses for training scenarios
+
             if self.tick_count % 15 == 0:
-                if self.scenario in (self.SCENARIO_FOOD, self.SCENARIO_FREE):
-                    while len(self.world.foods) < 50:
-                        fx = random.randint(20, self.width - 20)
-                        fy = random.randint(20, self.height - 20)
-                        self.world.foods.append(Food(fx, fy, FOOD_ENERGY, 0))
-                    # Track best-ever and respawn on extinction
-                    living = [c for c in self.world.cells if c.alive]
-                    for c in living:
-                        if self._best_ever is None or c.fitness > self._best_ever[0]:
-                            self._best_ever = (c.fitness, BodyGenome(c.body_genome.genes.copy()),
-                                               NeatGenome.from_dict(c.neat_genome.to_dict()))
-                    if len(living) == 0 and self._best_ever:
-                        for i in range(5):
-                            bg = BodyGenome(self._best_ever[1].genes.copy())
-                            ng = NeatGenome.from_dict(self._best_ever[2].to_dict())
-                            if i > 0:
-                                bg.mutate(); ng.mutate()
-                            cell = Cell(random.randint(50, self.width - 50),
-                                        random.randint(50, self.height - 50), bg, ng)
-                            cell.energy = cell.body_genome.repro_threshold * 0.9
-                            self.world.cells.append(cell)
-                elif self.scenario == self.SCENARIO_HUNT:
-                    # Keep carcasses available (easy meat for learning)
-                    while len(self.world.carcasses) < 8:
-                        cx = random.randint(30, self.width - 30)
-                        cy = random.randint(30, self.height - 30)
-                        self.world.carcasses.append(Carcass(cx, cy, FOOD_ENERGY * 2, 6.0))
-                    # Track best-ever predator
-                    predators = [c for c in self.world.cells if c.alive and c.body_genome.diet >= 0.5]
-                    for c in predators:
-                        if self._best_ever is None or c.fitness > self._best_ever[0]:
-                            self._best_ever = (
-                                c.fitness,
-                                BodyGenome(c.body_genome.genes.copy()),
-                                NeatGenome.from_dict(c.neat_genome.to_dict()),
-                            )
-                    # Cap predator population (max 30) — kill weakest
-                    if len(predators) > 30:
-                        excess = sorted(predators, key=lambda c: c.fitness)
-                        for c in excess[:len(predators) - 30]:
-                            c.hp = 0
-                    # Predator extinction → respawn from best-ever (+ mutated variants)
-                    if len(predators) == 0:
-                        for i in range(5):
-                            if self._best_ever:
-                                bg = BodyGenome(self._best_ever[1].genes.copy())
-                                ng = NeatGenome.from_dict(self._best_ever[2].to_dict())
-                                if i > 0:  # first is exact clone, rest mutated
-                                    bg.mutate()
-                                    ng.mutate()
-                            else:
-                                bg = self._make_scenario_body()
-                                ng = self._make_scenario_brain()
-                            x = random.randint(50, self.width - 50)
-                            y = random.randint(50, self.height - 50)
-                            cell = Cell(x, y, bg, ng)
-                            cell.energy = cell.body_genome.energy_cap * 0.8
-                            self.world.cells.append(cell)
-                    # Cap non-predator population (max 20) and respawn auto-prey (min 5)
-                    non_pred = [c for c in self.world.cells if c.alive and c.body_genome.diet < 0.5]
-                    if len(non_pred) > 20:
-                        excess = sorted(non_pred, key=lambda c: c.energy)
-                        for c in excess[:len(non_pred) - 20]:
-                            c.hp = 0
-                    auto_prey = sum(1 for c in non_pred if c.energy > 5000)
-                    while auto_prey < 5 and len(non_pred) < 20:
-                        self._spawn_hunt_prey()
-                        auto_prey += 1
-                elif self.scenario == self.SCENARIO_FLEE:
-                    # Keep some food for flee trainees
-                    while len(self.world.foods) < 10:
-                        fx = random.randint(20, self.width - 20)
-                        fy = random.randint(20, self.height - 20)
-                        self.world.foods.append(Food(fx, fy, FOOD_ENERGY, 0))
+                self._arena_maintenance()
+
             # Record fitness
             if self.tick_count % 50 == 0:
                 living = self.world.living_cells()
                 if living:
                     avg = sum(c.fitness for c in living) / len(living)
                     self.fitness_history.append((self.tick_count, avg))
+
+    def _arena_maintenance(self):
+        """Per-scenario food regrow, population caps, hall of fame tracking."""
+        # --- Food/carcass regrow ---
+        if self.scenario in (self.SCENARIO_FOOD, self.SCENARIO_FREE):
+            while len(self.world.foods) < 50:
+                fx = random.randint(20, self.width - 20)
+                fy = random.randint(20, self.height - 20)
+                self.world.foods.append(Food(fx, fy, FOOD_ENERGY, 0))
+        elif self.scenario == self.SCENARIO_HUNT:
+            while len(self.world.carcasses) < 8:
+                cx = random.randint(30, self.width - 30)
+                cy = random.randint(30, self.height - 30)
+                self.world.carcasses.append(Carcass(cx, cy, FOOD_ENERGY * 2, 6.0))
+        elif self.scenario == self.SCENARIO_FLEE:
+            while len(self.world.foods) < 10:
+                fx = random.randint(20, self.width - 20)
+                fy = random.randint(20, self.height - 20)
+                self.world.foods.append(Food(fx, fy, FOOD_ENERGY, 0))
+
+        # --- Identify trainee cells (exclude auto-prey/predators with infinite energy) ---
+        if self.scenario == self.SCENARIO_HUNT:
+            trainees = [c for c in self.world.cells if c.alive and c.body_genome.diet >= 0.5 and c.energy < 5000]
+            # Hunt-specific: cap predators at 30
+            if len(trainees) > 30:
+                excess = sorted(trainees, key=lambda c: c.fitness)
+                for c in excess[:len(trainees) - 30]:
+                    c.hp = 0
+                trainees = trainees[len(trainees) - 30:]
+            # Hunt-specific: manage auto-prey
+            non_pred = [c for c in self.world.cells if c.alive and c.body_genome.diet < 0.5]
+            if len(non_pred) > 20:
+                excess = sorted(non_pred, key=lambda c: c.energy)
+                for c in excess[:len(non_pred) - 20]:
+                    c.hp = 0
+            auto_prey = sum(1 for c in non_pred if c.energy > 5000)
+            while auto_prey < 5 and len(non_pred) < 20:
+                self._spawn_hunt_prey()
+                auto_prey += 1
+        elif self.scenario == self.SCENARIO_FLEE:
+            # Exclude auto-predators
+            trainees = [c for c in self.world.cells if c.alive and c.body_genome.diet < 0.4 and c.energy < 5000]
+        else:
+            trainees = [c for c in self.world.cells if c.alive]
+
+        # --- Update hall of fame (all scenarios) ---
+        if trainees:
+            self._update_hall_of_fame(trainees)
+
+        # --- Extinction respawn from hall of fame ---
+        if len(trainees) == 0:
+            self._respawn_from_hall_of_fame(5)
 
     def get_best_cell(self):
         """Return the best performing living cell."""
@@ -4472,6 +4570,16 @@ class Game:
             _line(f"  Fitness: {best.fitness:.1f}")
             _line(f"  Energy: {best.energy:.1f}")
             _line(f"  Brain: {best.neat_genome.num_hidden()}h {best.neat_genome.num_enabled_connections()}c")
+        py += 5
+
+        # Hall of fame
+        hof = self.arena._hall_of_fame
+        if hof:
+            _line(f"Hall of Fame (top {len(hof)}):", (255, 215, 80))
+            for i, (fit, bg, ng) in enumerate(hof):
+                dtag = "herb" if bg.diet < 0.3 else ("carn" if bg.diet > 0.7 else "omni")
+                _line(f"  {i+1}. {dtag} f:{fit:.1f} sz:{bg.size:.0f} [{ng.num_hidden()}h {ng.num_enabled_connections()}c]",
+                      (220, 200, 100))
         py += 10
 
         saved_genomes = self._load_genomes_from_library()

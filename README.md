@@ -42,9 +42,12 @@ Each cell has two genomes:
 
 ### Biological Systems
 
-- **Directional mouth** - Gene-controlled cone angle (55-80 deg). Must face food to eat. Contact absorption if food overlaps body.
+- **Directional mouth** - Gene-controlled cone angle (55-80 deg). Must face food to eat AND to bite. Contact absorption if food overlaps body.
 - **Continuous diet curve** - `plant_eff = (1-diet)^0.7`, `meat_eff = diet^0.7`. No magic thresholds.
-- **Multi-horn system** - 0-3 horns with gene-controlled positions. Carnivore synergy (+30% attack), herbivore synergy (+50% defense).
+- **Multi-horn system** - 0-3 horns with gene-controlled positions (frontal/radial). Horns deal damage through **physical contact only** — the horn tip must touch the other cell. Herbivore synergy (+50% horn defense).
+- **Bite combat** - Cells attack by biting (mouth cone). Must face the target. Carnivore synergy (+30% bite damage).
+- **Cell-cell collision** - Bounding circle push with mass-proportional resolution. Predator-prey pairs excluded (allows combat overlap).
+- **Obstacle collision** - AABB circle collision with velocity dampening.
 - **Positive-only cilia** - Can only push, not pull. Visual animation reflects actual thrust direction.
 - **Turn rate limit** - Genetic cap on angular velocity.
 - **Pheromone system** - 7 types: trail, danger, food, mate, prey scent, corpse scent, ambush.
@@ -66,7 +69,7 @@ The main simulation starts **empty**. Train cells in isolated arenas, save good 
 - 20k-50k: Medium speed
 - 50k+: Full speed
 
-**Hall of Fame**: If all cells die, the best-ever genome respawns (1 clone + 4 mutated variants).
+**Hall of Fame** (all scenarios): Top 3 best genomes are tracked. On extinction, they respawn as clones + mutated variants. Knowledge is never lost.
 
 ### Genome Library
 
